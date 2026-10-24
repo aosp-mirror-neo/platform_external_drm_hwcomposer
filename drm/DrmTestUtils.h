@@ -92,6 +92,7 @@ constexpr uint32_t kFakeColorOpTypePropId = 44;
 constexpr uint32_t kFakeColorOpNextPropId = 45;
 constexpr uint32_t kFakeColorOpBypassPropId = 46;
 constexpr uint32_t kFakeColorOpDataPropId = 47;
+inline constexpr uint32_t kFakePathPropId = 48;
 constexpr uint32_t kFakeColorspacePropId = 50;
 constexpr uint32_t kFakeHdrOutputMetadataPropId = 51;
 constexpr uint32_t kFakeAllCrtcsMask = 0xFFFFFFFFU;
@@ -355,12 +356,13 @@ class FakeDrmConnector : public DrmConnector {
 
   static DrmModeConnectorUnique MakeFakeRawConnector(
       uint32_t connector_id, uint32_t encoder_id, uint32_t connector_type,
+      uint32_t connector_type_id = 1,
       const std::vector<drmModeModeInfo>& raw_modes = {}) {
     auto* raw = new drmModeConnector{};
     raw->connector_id = connector_id;
     raw->encoder_id = encoder_id;
     raw->connector_type = connector_type;
-    raw->connector_type_id = 1;
+    raw->connector_type_id = connector_type_id;
     raw->connection = DRM_MODE_CONNECTED;
     if (!raw_modes.empty()) {
       raw->count_modes = static_cast<int>(raw_modes.size());
@@ -374,9 +376,11 @@ class FakeDrmConnector : public DrmConnector {
             }};
   }
 
-  void InitRawConnector(uint32_t connector_type) {
+  void InitRawConnector(uint32_t connector_type,
+                        uint32_t connector_type_id = 1) {
+    connector_type_id_ = connector_type_id;
     connector_ = MakeFakeRawConnector(connector_id_, encoder_id_,
-                                      connector_type);
+                                      connector_type, connector_type_id);
     connector_->connection = connected_ ? DRM_MODE_CONNECTED
                                         : DRM_MODE_DISCONNECTED;
   }
@@ -578,6 +582,7 @@ class FakeDrmConnector : public DrmConnector {
   const bool is_external_;
   uint32_t width_;
   uint32_t height_;
+  uint32_t connector_type_id_ = 1;
   PropHook prop_hook_;
   bool connected_ = true;
   std::optional<bool> pending_connected_;
@@ -592,7 +597,9 @@ class FakeDrmConnector : public DrmConnector {
 class FakeDrmEncoder : public DrmEncoder {
  public:
   FakeDrmEncoder(uint32_t id, uint32_t crtc_id)
-      : DrmEncoder(nullptr, 0), id_(id), crtc_id_(crtc_id) {
+      : DrmEncoder(MakeFakeRawEncoder(id, crtc_id, kFakeAllCrtcsMask), 0),
+        id_(id),
+        crtc_id_(crtc_id) {
   }
 
   FakeDrmEncoder(DrmModeEncoderUnique enc, uint32_t index)
@@ -789,8 +796,10 @@ class FakeDrmFbImporter : public DrmFbImporter {
 
 class FakeDrmDevice : public DrmDevice {
  public:
-  explicit FakeDrmDevice(ResourceManager* res_man = nullptr)
-      : DrmDevice(res_man, 0) {
+  using ConnectorConfigCallback = std::function<void(FakeDrmConnector&)>;
+
+  explicit FakeDrmDevice(ResourceManager* res_man = nullptr, uint32_t index = 0)
+      : DrmDevice(res_man, index) {
     // Provide a valid open file descriptor so libdrm entry points (such as
     // drmModeAtomicCommit) do not fail with -EBADF before reaching the ioctl
     // path.
@@ -924,6 +933,7 @@ class FakeDrmDevice : public DrmDevice {
                                                     raw_it->second.encoder_id,
                                                     raw_it->second
                                                         .connector_type,
+                                                    /*connector_type_id=*/1,
                                                     raw_it->second.modes);
     }
     return DrmDevice::GetConnector(connector_id);
@@ -971,6 +981,10 @@ class FakeDrmDevice : public DrmDevice {
     resource_connector_ids_ = std::move(connector_ids);
   }
 
+  void SetConnectorConfigCallback(ConnectorConfigCallback callback) {
+    connector_config_callback_ = std::move(callback);
+  }
+
   void SetGetResourcesHook(std::function<void()> hook) {
     get_resources_hook_ = std::move(hook);
   }
@@ -988,6 +1002,14 @@ class FakeDrmDevice : public DrmDevice {
     connectors_.emplace_back(std::move(connector));
   }
 
+  void AddWritebackConnector(std::unique_ptr<DrmConnector> connector) {
+    writeback_connectors_.emplace_back(std::move(connector));
+  }
+
+  void AddIgnoredConnector(std::unique_ptr<DrmConnector> connector) {
+    ignored_connectors_.emplace_back(std::move(connector));
+  }
+
   void AddEncoder(std::unique_ptr<DrmEncoder> encoder) {
     encoders_.emplace_back(std::move(encoder));
   }
@@ -1000,14 +1022,35 @@ class FakeDrmDevice : public DrmDevice {
     planes_.emplace_back(std::move(plane));
   }
 
+  FakeDrmConnector* AddTypedConnector(uint32_t connector_id,
+                                      uint32_t connector_type,
+                                      uint32_t connector_type_id,
+                                      bool is_external, uint32_t index = 0) {
+    auto conn = std::make_unique<FakeDrmConnector>(this, connector_id,
+                                                   is_external,
+                                                   kFakeConnectorMmWidth,
+                                                   kFakeConnectorMmHeight,
+                                                   connector_id, index);
+    conn->InitRawConnector(connector_type, connector_type_id);
+    auto* ptr = conn.get();
+    if (connector_type == DRM_MODE_CONNECTOR_WRITEBACK) {
+      AddWritebackConnector(std::move(conn));
+    } else {
+      AddConnector(std::move(conn));
+    }
+    return ptr;
+  }
+
   struct PipelineResources {
     FakeDrmConnector* connector = nullptr;
     FakeDrmCrtc* crtc = nullptr;
     FakeDrmPlane* primary_plane = nullptr;
   };
 
-  PipelineResources AddPipelineResourcesTyped(std::vector<DrmMode> modes,
-                                              bool is_external = false) {
+  PipelineResources AddPipelineResourcesTyped(
+      std::vector<DrmMode> modes, bool is_external = false,
+      std::optional<uint32_t> custom_res_index = std::nullopt) {
+    const uint32_t res_index = custom_res_index.value_or(next_id_);
     auto encoder = std::make_unique<FakeDrmEncoder>(/*id=*/next_id_,
                                                     /*crtc_id=*/next_id_ + 1);
     encoder->InitRawEncoder(kFakeAllCrtcsMask);
@@ -1019,7 +1062,7 @@ class FakeDrmDevice : public DrmDevice {
         FakeDrmConnector>(this,
                           /*encoder_id=*/next_id_, is_external,
                           kFakeConnectorMmWidth, kFakeConnectorMmHeight,
-                          kFakeConnectorBaseId + next_id_, next_id_,
+                          kFakeConnectorBaseId + next_id_, res_index,
                           [this](uint32_t obj_id, const std::string& prop_name,
                                  uint32_t prop_id, uint32_t flags,
                                  uint64_t val) {
@@ -1042,9 +1085,18 @@ class FakeDrmDevice : public DrmDevice {
     return AddPipelineResourcesWithModes({CreateFakeDrmMode()}, is_external);
   }
 
-  FakeDrmConnector* AddPipelineResourcesWithModes(std::vector<DrmMode> modes,
-                                                  bool is_external = false) {
-    return AddPipelineResourcesTyped(std::move(modes), is_external).connector;
+  FakeDrmConnector* AddPipelineResourcesAtIndex(uint32_t res_index,
+                                                bool is_external = false) {
+    return AddPipelineResourcesWithModes({CreateFakeDrmMode()}, is_external,
+                                         res_index);
+  }
+
+  FakeDrmConnector* AddPipelineResourcesWithModes(
+      std::vector<DrmMode> modes, bool is_external = false,
+      std::optional<uint32_t> custom_res_index = std::nullopt) {
+    return AddPipelineResourcesTyped(std::move(modes), is_external,
+                                     custom_res_index)
+        .connector;
   }
 
  protected:
@@ -1092,6 +1144,9 @@ class FakeDrmDevice : public DrmDevice {
                           });
     conn->InitRawConnector(DRM_MODE_CONNECTOR_DisplayPort);
     conn->SetModes({CreateFakeDrmMode()});
+    if (connector_config_callback_) {
+      connector_config_callback_(*conn);
+    }
     return conn;
   }
 
@@ -1118,6 +1173,7 @@ class FakeDrmDevice : public DrmDevice {
   std::function<void(uint32_t)> get_connector_hook_;
   std::function<void()> get_resources_hook_;
   std::vector<uint32_t> resource_connector_ids_;
+  ConnectorConfigCallback connector_config_callback_;
   std::map<std::pair<uint32_t, uint32_t>, uint64_t> last_reset_req_values_;
 };
 
