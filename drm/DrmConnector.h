@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "drm/DrmColorspace.h"
@@ -213,7 +214,30 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
     return connector_->connector_type;
   }
 
+  struct MstPath {
+    uint32_t base_connector_id = 0;
+    std::vector<uint32_t> ports;
+
+    bool operator==(const MstPath &rhs) const {
+      return base_connector_id == rhs.base_connector_id && ports == rhs.ports;
+    }
+
+    bool operator<(const MstPath &rhs) const {
+      if (base_connector_id != rhs.base_connector_id) {
+        return base_connector_id < rhs.base_connector_id;
+      }
+      return ports < rhs.ports;
+    }
+  };
+
   bool IsMst() const;
+
+  // Parses a kernel DRM "PATH" blob string of the format:
+  //   mst:{DRM_BASE_CONNECTOR_ID#}-{BRANCH_1_PORT#}-...-{BRANCH_N_PORT#}\0
+  // For example, "mst:6-2-1" represents:
+  //   Device <--conn6-- MST1 <--port2-- MST2 <--port1-- Display
+  static auto ParseMstPath(std::string_view raw_path) -> std::optional<MstPath>;
+  auto GetMstPath() const -> std::optional<MstPath>;
 
   void MarkDeleted() {
     deleted_ = true;
@@ -232,6 +256,11 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
   }
 
   std::optional<uint32_t> GetPhysicalPortBaseId() const;
+
+ protected:
+  virtual bool GetPathPropertyBlobData(std::vector<char> &path_data) const {
+    return path_property_.GetBlobData(path_data);
+  }
 
  private:
   DrmConnector(DrmModeConnectorUnique connector, DrmDevice *drm,

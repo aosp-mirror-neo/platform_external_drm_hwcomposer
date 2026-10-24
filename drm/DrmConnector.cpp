@@ -594,42 +594,80 @@ std::optional<PanelOrientation> DrmConnector::GetPanelOrientation() {
 
 /* Returns true if the connector is a Multi-Stream Transport (MST) connector */
 bool DrmConnector::IsMst() const {
-  // It is a MST connector if the path property is present and has a non-zero
-  // value.
-  return path_property_.GetId() != 0 &&
-         path_property_.GetValue().value_or(0) != 0;
+  // In KMS, dev->mode_config.path_property ("PATH") is only attached to
+  // dynamic MST connectors and never to native root connectors. Checking
+  // GetId() != 0 rather than operator bool() (which also requires a non-zero
+  // blob ID) ensures MST connectors are still recognized even if a kernel
+  // driver attaches PATH without populating its blob value.
+  return path_property_.GetId() != 0;
 }
 
-std::optional<uint32_t> DrmConnector::GetPhysicalPortBaseId() const {
-  if (!IsMst() || !path_property_.IsBlob()) {
+std::optional<DrmConnector::MstPath> DrmConnector::ParseMstPath(
+    std::string_view raw_path) {
+  while (!raw_path.empty() && raw_path.back() == '\0') {
+    raw_path.remove_suffix(1);
+  }
+
+  constexpr std::string_view kMstPrefix = "mst:";
+  if (raw_path.substr(0, kMstPrefix.size()) != kMstPrefix) {
+    return std::nullopt;
+  }
+
+  MstPath parsed;
+  std::string_view rest = raw_path.substr(kMstPrefix.size());
+  size_t start = 0;
+  bool is_base = true;
+
+  while (start <= rest.size()) {
+    const size_t dash = rest.find('-', start);
+    const std::string_view token = rest.substr(start, dash - start);
+    if (token.empty()) {
+      return std::nullopt;
+    }
+
+    uint32_t value = 0;
+    auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(),
+                                     value);
+    if (ec != std::errc() || ptr != token.data() + token.size() || value == 0) {
+      return std::nullopt;
+    }
+
+    if (is_base) {
+      parsed.base_connector_id = value;
+      is_base = false;
+    } else {
+      parsed.ports.push_back(value);
+    }
+
+    if (dash == std::string_view::npos) {
+      break;
+    }
+    start = dash + 1;
+  }
+
+  if (is_base || parsed.ports.empty()) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+std::optional<DrmConnector::MstPath> DrmConnector::GetMstPath() const {
+  if (!IsMst() || !path_property_.IsBlob() ||
+      path_property_.GetValue().value_or(0) == 0) {
     return std::nullopt;
   }
 
   std::vector<char> path_data;
-  if (!path_property_.GetBlobData(path_data) || path_data.empty()) {
+  if (!GetPathPropertyBlobData(path_data) || path_data.empty()) {
     return std::nullopt;
   }
 
-  std::string_view path(path_data.data(), path_data.size());
+  return ParseMstPath(std::string_view(path_data.data(), path_data.size()));
+}
 
-  // Check if it starts with "mst:"
-  if (path.substr(0, 4) != "mst:") {
-    return std::nullopt;
-  }
-
-  // Find the first dash after "mst:"
-  size_t dash_pos = path.find('-', 4);
-  if (dash_pos == std::string_view::npos) {
-    return std::nullopt;
-  }
-
-  std::string_view base_id_str = path.substr(4, dash_pos - 4);
-  uint32_t base_id = 0;
-  auto [ptr, ec] = std::from_chars(base_id_str.data(),
-                                   base_id_str.data() + base_id_str.size(),
-                                   base_id);
-  if (ec == std::errc() && ptr == base_id_str.data() + base_id_str.size()) {
-    return base_id;
+std::optional<uint32_t> DrmConnector::GetPhysicalPortBaseId() const {
+  if (auto mst_path = GetMstPath()) {
+    return mst_path->base_connector_id;
   }
   return std::nullopt;
 }

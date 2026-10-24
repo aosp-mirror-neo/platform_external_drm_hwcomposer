@@ -520,6 +520,12 @@ class FakeDrmConnector : public DrmConnector {
     return width_;
   }
 
+  void SetMstPath(std::string path) {
+    mst_path_ = std::move(path);
+    InitFakeDrmProperty(path_property_, connector_id_, kFakePathPropId, "PATH",
+                        DRM_MODE_PROP_BLOB, mst_path_.empty() ? 0 : 1);
+  }
+
   uint32_t GetMmHeight() const override {
     return height_;
   }
@@ -576,6 +582,15 @@ class FakeDrmConnector : public DrmConnector {
 
   void SetCrtcIdPropertyValue(uint64_t value);
 
+ protected:
+  bool GetPathPropertyBlobData(std::vector<char>& path_data) const override {
+    if (!mst_path_.empty()) {
+      path_data.assign(mst_path_.begin(), mst_path_.end());
+      return true;
+    }
+    return DrmConnector::GetPathPropertyBlobData(path_data);
+  }
+
  private:
   const uint32_t connector_id_;
   const uint32_t encoder_id_;
@@ -592,6 +607,7 @@ class FakeDrmConnector : public DrmConnector {
   std::string name_ = "FakeConnector-1";
   bool content_protection_enabled_simulated_ = false;
   std::vector<uint8_t> edid_bytes_;
+  std::string mst_path_;
 };
 
 class FakeDrmEncoder : public DrmEncoder {

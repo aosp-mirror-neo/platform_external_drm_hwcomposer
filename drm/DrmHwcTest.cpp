@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <xf86drmMode.h>
 
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -2370,6 +2371,142 @@ TEST_F(DrmHwcTest,
 
   EXPECT_EQ(commits_at_final_wait, kNumTestFrames);
   sink->ClearHistory();
+}
+
+TEST_F(DrmHwcTest, ParseMstPathRejectsEmptyString) {
+  EXPECT_FALSE(DrmConnector::ParseMstPath("").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath(" ").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("           ").has_value());
+}
+
+TEST_F(DrmHwcTest, ParseMstPathRejectsNullOnlyBlobs) {
+  constexpr size_t kSingleNullLen = 1;
+  constexpr size_t kMultiNullLen = 3;
+
+  EXPECT_FALSE(
+      DrmConnector::ParseMstPath(std::string_view("\0", kSingleNullLen))
+          .has_value());
+  EXPECT_FALSE(
+      DrmConnector::ParseMstPath(std::string_view("\0\0\0", kMultiNullLen))
+          .has_value());
+}
+
+TEST_F(DrmHwcTest, ParseMstPathRejectsMalformedPrefix) {
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst6-2-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("MST:6-2-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("ms").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("6-2-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("path:6-2-1").has_value());
+}
+
+TEST_F(DrmHwcTest, ParseMstPathRejectsMalformedBranchDelimiters) {
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6-").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst::6-2-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:-6-2-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6-2-1-").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6--2").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:---").has_value());
+}
+
+TEST_F(DrmHwcTest, ParseMstPathRejectsNonNumericPortTokens) {
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:c7").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6-b-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6-2a").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6- -2- -1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6 -2-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6-'2'-1").has_value());
+}
+
+TEST_F(DrmHwcTest, ParseMstPathRejectsEmbeddedNullByte) {
+  constexpr size_t kEmbeddedNullLen = 11;
+
+  EXPECT_FALSE(DrmConnector::ParseMstPath(
+                   std::string_view("mst:6-\0-2-1", kEmbeddedNullLen))
+                   .has_value());
+}
+
+TEST_F(DrmHwcTest, ParseMstPathRejectsOutOfRangePortNumbers) {
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:0-2-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6-0-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6-2-0").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:4294967296-1").has_value());
+  EXPECT_FALSE(DrmConnector::ParseMstPath("mst:6-4294967296").has_value());
+}
+
+TEST_F(DrmHwcTest, ParseMstPathParsesMultiHopTopology) {
+  constexpr uint32_t kBaseIdSix = 6;
+  constexpr uint32_t kBaseIdNinetyFive = 95;
+  constexpr uint32_t kPortOne = 1;
+  constexpr uint32_t kPortTwo = 2;
+  constexpr uint32_t kPortEight = 8;
+
+  const DrmConnector::MstPath expected_one_hop{
+      .base_connector_id = kBaseIdNinetyFive,
+      .ports = {kPortOne},
+  };
+  const DrmConnector::MstPath expected_two_hop{
+      .base_connector_id = kBaseIdSix,
+      .ports = {kPortTwo, kPortOne},
+  };
+  const DrmConnector::MstPath expected_three_hop{
+      .base_connector_id = kBaseIdNinetyFive,
+      .ports = {kPortOne, kPortEight, kPortTwo},
+  };
+
+  EXPECT_EQ(DrmConnector::ParseMstPath("mst:95-1"), expected_one_hop);
+  EXPECT_EQ(DrmConnector::ParseMstPath("mst:6-2-1"), expected_two_hop);
+  EXPECT_EQ(DrmConnector::ParseMstPath("mst:95-1-8-2"), expected_three_hop);
+}
+
+TEST_F(DrmHwcTest, ParseMstPathStripsTrailingNullBytes) {
+  constexpr uint32_t kBaseIdSix = 6;
+  constexpr uint32_t kPortOne = 1;
+  constexpr uint32_t kPortTwo = 2;
+  constexpr size_t kSingleTrailingNullLen = 10;
+  constexpr size_t kMultiTrailingNullLen = 11;
+
+  const DrmConnector::MstPath expected_two_hop{
+      .base_connector_id = kBaseIdSix,
+      .ports = {kPortTwo, kPortOne},
+  };
+
+  EXPECT_EQ(DrmConnector::ParseMstPath(
+                std::string_view("mst:6-2-1\0", kSingleTrailingNullLen)),
+            expected_two_hop);
+  EXPECT_EQ(DrmConnector::ParseMstPath(
+                std::string_view("mst:6-2-1\0\0", kMultiTrailingNullLen)),
+            expected_two_hop);
+
+  constexpr std::array<char, 9> kRawChars = {'m', 's', 't', ':', '6',
+                                             '-', '2', '-', '1'};
+  EXPECT_EQ(DrmConnector::ParseMstPath(
+                std::string_view(kRawChars.data(), kRawChars.size())),
+            expected_two_hop);
+}
+
+TEST_F(DrmHwcTest, GetPhysicalPortBaseIdExtractsRootConnectorId) {
+  constexpr uint32_t kBaseIdNinetyFive = 95;
+
+  FakeDrmConnector mst_conn(fake_device.get(), kBaseIdNinetyFive,
+                            /*is_external=*/true, kFakeConnectorMmWidth,
+                            kFakeConnectorMmHeight, kBaseIdNinetyFive, 0);
+  EXPECT_FALSE(mst_conn.GetPhysicalPortBaseId().has_value());
+  mst_conn.SetMstPath("mst:95-1-8");
+  EXPECT_EQ(mst_conn.GetPhysicalPortBaseId(), kBaseIdNinetyFive);
+}
+
+TEST_F(DrmHwcTest, IsMstRecognizesAttachedPathPropertyEvenWhenBlobValueIsZero) {
+  constexpr uint32_t kMstConnectorId = 361;
+
+  FakeDrmConnector mst_conn(fake_device.get(), kFirstEncoderId,
+                            /*is_external=*/true, kFakeConnectorMmWidth,
+                            kFakeConnectorMmHeight, kMstConnectorId, 0);
+  EXPECT_FALSE(mst_conn.IsMst());
+  mst_conn.SetMstPath("");
+  EXPECT_TRUE(mst_conn.IsMst());
+  EXPECT_FALSE(mst_conn.GetMstPath().has_value());
 }
 
 }  // namespace android::drm_hwcomposer
