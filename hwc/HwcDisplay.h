@@ -216,6 +216,12 @@ class HwcDisplay : public ICompositorDisplay {
   auto GetRawEdid() const -> std::vector<uint8_t>;
 
   // Get the port id that this display is plugged into.
+  //
+  // Returns 0 when the display is in headless mode or is a writeback-backed
+  // virtual display. This cannot collide with a physical display at port 0
+  // because headless mode only exists when no physical display is connected,
+  // and virtual displays are backed by writeback connectors that do not
+  // represent physical display ports or expose EDID identification data.
   auto GetPort() const -> uint8_t;
 
   auto HasBacklight() const -> bool {

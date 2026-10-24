@@ -770,7 +770,9 @@ auto HwcDisplay::GetRawEdid() const -> std::vector<uint8_t> {
 }
 
 auto HwcDisplay::GetPort() const -> uint8_t {
-  if (IsInHeadlessMode()) {
+  // Virtual displays bind a writeback connector pipeline and are not headless,
+  // but must never report a hardware display port.
+  if (is_virtual_ || IsInHeadlessMode()) {
     return 0;
   }
 

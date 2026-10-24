@@ -3591,4 +3591,39 @@ TEST_F(
 }
 #endif
 
+TEST_F(HwcDisplayTest, GetPortReturnsZeroForWritebackVirtualDisplay) {
+  constexpr uint32_t kDeviceOrdinalOne = 1;
+  constexpr uint32_t kWritebackResIndex = 7;
+
+  FakeDrmDevice dev(&hwc.GetResMan(), kDeviceOrdinalOne);
+  dev.GetFakeAtomicCommitSink()->SetDriveStateManager(true);
+  auto* wb_conn = dev.AddPipelineResourcesAtIndex(kWritebackResIndex,
+                                                  /*is_external=*/false);
+  wb_conn->InitRawConnector(DRM_MODE_CONNECTOR_WRITEBACK);
+
+  HwcDisplay virtual_display(/*handle=*/1, /*is_virtual=*/true, &hwc);
+  virtual_display.SetVirtualDisplayResolution(kFhdWidth, kFhdHeight);
+  ASSERT_TRUE(
+      virtual_display.SetPipeline(dev.GetBackend().CreatePipeline(*wb_conn)));
+  EXPECT_FALSE(virtual_display.IsInHeadlessMode());
+  EXPECT_EQ(virtual_display.GetPort(), 0U);
+  virtual_display.SetPipeline(nullptr);
+}
+
+TEST_F(HwcDisplayTest, GetPortEncodesDeviceOrdinalInUpperBits) {
+  constexpr uint32_t kDeviceOrdinalOne = 1;
+  constexpr uint32_t kConnectorPortIndex = 3;
+  constexpr uint8_t kExpectedPort = 35U;
+
+  FakeDrmDevice dev(&hwc.GetResMan(), kDeviceOrdinalOne);
+  dev.GetFakeAtomicCommitSink()->SetDriveStateManager(true);
+  auto* conn = dev.AddPipelineResourcesAtIndex(kConnectorPortIndex,
+                                               /*is_external=*/true);
+
+  HwcDisplay display(/*handle=*/1, /*is_virtual=*/false, &hwc);
+  ASSERT_TRUE(display.SetPipeline(dev.GetBackend().CreatePipeline(*conn)));
+  EXPECT_EQ(display.GetPort(), kExpectedPort);
+  display.SetPipeline(nullptr);
+}
+
 }  // namespace android::drm_hwcomposer
