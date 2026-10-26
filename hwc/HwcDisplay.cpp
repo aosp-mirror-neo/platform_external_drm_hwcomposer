@@ -1663,6 +1663,13 @@ AtomicCommitArgs HwcDisplay::CreateModesetCommit(
   args.hdr_headroom = hdr_headroom_;
   args.color_mode = color_mode_;
 
+  // When all layers are client composited and SKIP_CLIENT_COLOR_TRANSFORM is
+  // not advertised, GetExistingModesetLayerData() reuses client_layer_ which
+  // already has the client CTM baked in by RenderEngine.
+  if (!ShouldApplyClientCtm(AllLayersClientComposited())) {
+    args.color_matrix = render_intent_matrix_;
+  }
+
   std::vector<LayerData> composition_layers;
   if (modeset_layer) {
     composition_layers.emplace_back(modeset_layer.value());
@@ -2117,6 +2124,14 @@ bool HwcDisplay::HasHardwareColorTransform() const {
 bool HwcDisplay::SkipsClientColorTransform() const {
   return HasHardwareColorTransform() ||
          hwc_->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrIgnore;
+}
+
+bool HwcDisplay::AllLayersClientComposited() const {
+  return std::all_of(layers_.begin(), layers_.end(), [](const auto &pair) {
+    const CompositionType type = pair.second.GetValidatedType();
+    return type == CompositionType::kClient ||
+           type == CompositionType::kDeviceOccluded;
+  });
 }
 
 bool HwcDisplay::AllLayersClientComposited(

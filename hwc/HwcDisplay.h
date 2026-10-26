@@ -456,6 +456,7 @@ class HwcDisplay : public ICompositorDisplay {
   // transitions and update the config groups.
   void SetConfigGroupsForActiveConfig();
 
+  bool AllLayersClientComposited() const;
   bool AllLayersClientComposited(
       const CompositionPlanner::CompositionTypeMap &composition_types) const;
   bool ShouldApplyClientCtm(bool all_client_layers) const;

@@ -4505,4 +4505,37 @@ TEST_F(HwcDisplayTest,
   EXPECT_EQ(*args.color_matrix, kNightLightCtm);
 }
 
+TEST_F(HwcDisplayTest,
+       SameResolutionModesetDuringFlattenedClientCompositionResetsCrtcCtm) {
+  auto pipeline = CreateLegacyCrtcCtmPipeline(
+      {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
+                         DRM_MODE_TYPE_PREFERRED, "1080p60"),
+       CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh120Hz, 0, "1080p120")});
+  HwcDisplay display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
+  display.SetPipeline(pipeline);
+  display.GetClientLayer().SetLayerProperties(
+      CreateFullScreenFhdLayerProperties(
+          std::make_shared<FakeFbIdHandle>(kTestFbId)));
+  display.SetColorTransformMatrix(kNightLightCtm);
+
+  ASSERT_TRUE(display.CreateLayer(1));
+  auto client_props = CreateFullScreenFhdLayerProperties(
+      std::make_shared<FakeFbIdHandle>(kTestFbId));
+  client_props.composition_type = CompositionType::kClient;
+  display.get_layer(1)->SetLayerProperties(client_props);
+  ValidateAcceptAndPresent(display);
+
+  const ConfigId initial_id = display.GetCurrentConfig()->id;
+  const auto configs = display.GetDisplayConfigs();
+  const ConfigId fhd_120_id = (configs[0].id == initial_id) ? configs[1].id
+                                                            : configs[0].id;
+  auto* sink = fake_device->GetFakeAtomicCommitSink();
+  sink->ClearHistory();
+  EXPECT_EQ(display.SetConfig(fhd_120_id), HwcDisplay::ConfigError::kNone);
+  ASSERT_FALSE(sink->GetCommitHistory().empty());
+  const auto& modeset_args = sink->GetCommitHistory().back().front();
+  ASSERT_NE(modeset_args.color_matrix, nullptr);
+  EXPECT_EQ(*modeset_args.color_matrix, kIdentityMatrix);
+}
+
 }  // namespace android::drm_hwcomposer
