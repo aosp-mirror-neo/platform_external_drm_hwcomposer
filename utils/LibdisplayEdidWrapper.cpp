@@ -40,6 +40,12 @@ namespace android::drm_hwcomposer {
 
 auto LibdisplayEdidWrapper::Create(DrmModePropertyBlobUnique blob)
     -> std::unique_ptr<LibdisplayEdidWrapper> {
+  return Create(std::move(blob), VendorStringOps{});
+}
+
+auto LibdisplayEdidWrapper::Create(DrmModePropertyBlobUnique blob,
+                                   VendorStringOps string_ops)
+    -> std::unique_ptr<LibdisplayEdidWrapper> {
   if (!blob)
     return nullptr;
 
@@ -50,7 +56,7 @@ auto LibdisplayEdidWrapper::Create(DrmModePropertyBlobUnique blob)
   }
 
   return std::unique_ptr<LibdisplayEdidWrapper>(
-      new LibdisplayEdidWrapper(std::move(info)));
+      new LibdisplayEdidWrapper(info, string_ops));
 }
 
 void LibdisplayEdidWrapper::GetSupportedHdrTypes(std::vector<ui::Hdr> &types) {
@@ -171,9 +177,10 @@ auto LibdisplayEdidWrapper::GetBoundsMm() -> std::pair<int32_t, int32_t> {
 
 EdidWrapper::VendorProductInfo LibdisplayEdidWrapper::GetVendorProductInfo()
     const {
-  auto vendor = VendorProductInfo{.make = std::string(di_info_get_make(info_)),
+  auto vendor = VendorProductInfo{.make = std::string(
+                                      string_ops_.get_make(info_)),
                                   .model = std::string(
-                                      di_info_get_model(info_))};
+                                      string_ops_.get_model(info_))};
 
   const auto *edid = di_info_get_edid(info_);
   if (edid != nullptr) {
