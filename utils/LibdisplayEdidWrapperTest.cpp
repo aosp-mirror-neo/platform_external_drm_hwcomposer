@@ -27,6 +27,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -122,7 +123,109 @@ TEST_F(LibdisplayEdidWrapperTest,
   EXPECT_EQ(wrapper->GetVendorProductInfo().model, kTestProductName);
 }
 
+// Records the strings handed out by the real libdisplay-info getters and every
+// pointer released through VendorStringOps::free_string. Function pointers
+// cannot capture, so the recorder is file-static and reset per test.
+struct StringOpsRecorder {
+  bool null_make = false;
+  bool null_model = false;
+  void *make = nullptr;
+  void *model = nullptr;
+  std::vector<void *> freed;
+};
+
+StringOpsRecorder &GetRecorder() {
+  static StringOpsRecorder recorder;
+  return recorder;
+}
+
+char *RecordingGetMake(const di_info *info) {
+  if (GetRecorder().null_make) {
+    return nullptr;
+  }
+  char *make = di_info_get_make(info);
+  GetRecorder().make = make;
+  return make;
+}
+
+char *RecordingGetModel(const di_info *info) {
+  if (GetRecorder().null_model) {
+    return nullptr;
+  }
+  char *model = di_info_get_model(info);
+  GetRecorder().model = model;
+  return model;
+}
+
+void RecordingFree(void *ptr) {
+  GetRecorder().freed.push_back(ptr);
+  std::free(ptr);
+}
+
 }  // namespace
+
+class LibdisplayEdidWrapperStringOpsTest : public LibdisplayEdidWrapperTest {
+ protected:
+  void SetUp() override {
+    GetRecorder() = StringOpsRecorder{};
+  }
+
+  EdidWrapper::VendorProductInfo GetVendorProductInfo() {
+    auto wrapper = LibdisplayEdidWrapper::
+        Create(MakeEdidBlob(), {
+                                   .get_make = RecordingGetMake,
+                                   .get_model = RecordingGetModel,
+                                   .free_string = RecordingFree,
+                               });
+    EXPECT_NE(wrapper, nullptr);
+    return wrapper ? wrapper->GetVendorProductInfo()
+                   : EdidWrapper::VendorProductInfo{};
+  }
+
+  static size_t FreeCount(const void *ptr) {
+    const auto &freed = GetRecorder().freed;
+    return static_cast<size_t>(std::count(freed.begin(), freed.end(), ptr));
+  }
+};
+
+TEST_F(LibdisplayEdidWrapperStringOpsTest,
+       GetVendorProductInfoFreesMakeString) {
+  const auto info = GetVendorProductInfo();
+
+  EXPECT_EQ(info.make, kGsmVendorName);
+  ASSERT_NE(GetRecorder().make, nullptr);
+  EXPECT_EQ(FreeCount(GetRecorder().make), 1U);
+}
+
+TEST_F(LibdisplayEdidWrapperStringOpsTest,
+       GetVendorProductInfoFreesModelString) {
+  const auto info = GetVendorProductInfo();
+
+  EXPECT_EQ(info.model, kTestProductName);
+  ASSERT_NE(GetRecorder().model, nullptr);
+  EXPECT_EQ(FreeCount(GetRecorder().model), 1U);
+}
+
+TEST_F(LibdisplayEdidWrapperStringOpsTest,
+       GetVendorProductInfoReturnsEmptyMakeWhenGetterReturnsNull) {
+  GetRecorder().null_make = true;
+
+  const auto info = GetVendorProductInfo();
+
+  EXPECT_EQ(info.make, "");
+  EXPECT_EQ(info.model, kTestProductName);
+}
+
+TEST_F(LibdisplayEdidWrapperStringOpsTest,
+       GetVendorProductInfoReturnsEmptyModelWhenGetterReturnsNull) {
+  GetRecorder().null_model = true;
+
+  const auto info = GetVendorProductInfo();
+
+  EXPECT_EQ(info.make, kGsmVendorName);
+  EXPECT_EQ(info.model, "");
+}
+
 }  // namespace android::drm_hwcomposer
 
 #endif  // HAS_LIBDISPLAY_INFO

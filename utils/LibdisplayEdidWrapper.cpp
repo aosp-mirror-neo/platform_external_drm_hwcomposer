@@ -177,10 +177,16 @@ auto LibdisplayEdidWrapper::GetBoundsMm() -> std::pair<int32_t, int32_t> {
 
 EdidWrapper::VendorProductInfo LibdisplayEdidWrapper::GetVendorProductInfo()
     const {
-  auto vendor = VendorProductInfo{.make = std::string(
-                                      string_ops_.get_make(info_)),
-                                  .model = std::string(
-                                      string_ops_.get_model(info_))};
+  // di_info_get_make() and di_info_get_model() return heap-allocated strings
+  // that the caller must free(), or nullptr on allocation failure.
+  using OwnedString = std::unique_ptr<char, void (*)(void *)>;
+  const OwnedString make(string_ops_.get_make(info_), string_ops_.free_string);
+  const OwnedString model(string_ops_.get_model(info_),
+                          string_ops_.free_string);
+  auto vendor = VendorProductInfo{
+      .make = make ? std::string(make.get()) : std::string(),
+      .model = model ? std::string(model.get()) : std::string(),
+  };
 
   const auto *edid = di_info_get_edid(info_);
   if (edid != nullptr) {
