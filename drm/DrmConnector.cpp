@@ -85,8 +85,7 @@ auto DrmConnector::GetConnectorProperty(const char *prop_name,
   return false;
 }
 
-auto DrmConnector::CreateInstance(DrmDevice &dev, uint32_t connector_id,
-                                  uint32_t index)
+auto DrmConnector::CreateInstance(DrmDevice &dev, uint32_t connector_id)
     -> std::unique_ptr<DrmConnector> {
   auto conn = dev.GetConnector(connector_id);
   if (!conn) {
@@ -102,7 +101,7 @@ auto DrmConnector::CreateInstance(DrmDevice &dev, uint32_t connector_id,
   }
 
   auto c = std::unique_ptr<DrmConnector>(
-      new DrmConnector(std::move(conn), &dev, index));
+      new DrmConnector(std::move(conn), &dev));
 
   if (!c->Init()) {
     // If the connector vanished (-ENODEV) during property discovery,

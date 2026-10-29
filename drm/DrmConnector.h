@@ -56,8 +56,8 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
   friend class FakeDrmConnector;
 
  public:
-  static auto CreateInstance(DrmDevice &dev, uint32_t connector_id,
-                             uint32_t index) -> std::unique_ptr<DrmConnector>;
+  static auto CreateInstance(DrmDevice &dev, uint32_t connector_id)
+      -> std::unique_ptr<DrmConnector>;
 
   DrmConnector(const DrmProperty &) = delete;
   DrmConnector &operator=(const DrmProperty &) = delete;
@@ -272,7 +272,7 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
 
  private:
   DrmConnector(DrmModeConnectorUnique connector, DrmDevice *drm,
-               uint32_t index);
+               uint32_t index = 0);
 
   DrmModeConnectorUnique connector_;
   DrmDevice *const drm_;

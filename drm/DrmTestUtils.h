@@ -1153,12 +1153,12 @@ class FakeDrmDevice : public DrmDevice {
   }
 
   std::unique_ptr<DrmConnector> CreateConnectorInstance(
-      uint32_t connector_id, uint32_t index) override {
+      uint32_t connector_id) override {
     auto conn = std::make_unique<
         FakeDrmConnector>(this,
                           /*encoder_id=*/connector_id,
                           /*is_external=*/true, kFakeConnectorMmWidth,
-                          kFakeConnectorMmHeight, connector_id, index,
+                          kFakeConnectorMmHeight, connector_id, /*index=*/0,
                           [this](uint32_t obj_id, const std::string& prop_name,
                                  uint32_t prop_id, uint32_t flags,
                                  uint64_t val) {
