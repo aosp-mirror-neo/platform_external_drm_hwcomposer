@@ -29,6 +29,7 @@
 
 #include "backend/Backend.h"
 #include "drm/AtomicCommitSink.h"
+#include "drm/DrmConnector.h"
 #include "drm/DrmUnique.h"
 #include "utils/fd.h"
 
@@ -36,7 +37,6 @@ namespace android::drm_hwcomposer {
 
 struct AtomicCommitArgs;
 struct BufferInfo;
-class DrmConnector;
 class DrmCrtc;
 class DrmEncoder;
 class DrmFbImporter;
@@ -148,6 +148,7 @@ class DrmDevice {
       ProbedConnectorResources &&probed,
       std::vector<DrmConnector *> *out_added_connectors = nullptr)
       -> std::vector<std::unique_ptr<DrmConnector>>;
+  void InitializeConnectorPorts();
   auto RefreshConnectors() -> std::vector<std::unique_ptr<DrmConnector>>;
   auto ResetConnectorsAndCrtcs() -> void;
 

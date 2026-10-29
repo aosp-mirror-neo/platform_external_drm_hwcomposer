@@ -81,6 +81,10 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
     return index_in_res_array_;
   }
 
+  void SetIndexInResArray(uint32_t index) {
+    index_in_res_array_ = index;
+  }
+
   virtual uint32_t GetCurrentEncoderId() const {
     return connector_->encoder_id;
   }
@@ -214,6 +218,10 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
     return connector_->connector_type;
   }
 
+  virtual uint32_t GetConnectorTypeId() const {
+    return connector_->connector_type_id;
+  }
+
   struct MstPath {
     uint32_t base_connector_id = 0;
     std::vector<uint32_t> ports;
@@ -284,7 +292,7 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
 
   auto GetTileBlobData() -> std::optional<std::vector<char>>;
 
-  const uint32_t index_in_res_array_;
+  uint32_t index_in_res_array_;
   bool deleted_ = false;
   bool reported_incompatible_cable_ = false;
   uint64_t probe_generation_ = 0;

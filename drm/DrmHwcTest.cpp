@@ -2509,4 +2509,124 @@ TEST_F(DrmHwcTest, IsMstRecognizesAttachedPathPropertyEvenWhenBlobValueIsZero) {
   EXPECT_FALSE(mst_conn.GetMstPath().has_value());
 }
 
+TEST_F(DrmHwcTest, InitializeConnectorPortsAssignsZeroToInternalPanel) {
+  constexpr uint32_t kDp1ConnId = 140;
+  constexpr uint32_t kEdp1ConnId = 150;
+
+  auto* dp1 = fake_device->AddTypedConnector(kDp1ConnId,
+                                             DRM_MODE_CONNECTOR_DisplayPort, 1,
+                                             /*is_external=*/true, 0);
+  auto* edp1 = fake_device->AddTypedConnector(kEdp1ConnId,
+                                              DRM_MODE_CONNECTOR_eDP, 1,
+                                              /*is_external=*/false, 1);
+
+  fake_device->InitializeConnectorPorts();
+
+  EXPECT_EQ(edp1->GetIndexInResArray(), 0U);
+  EXPECT_EQ(dp1->GetIndexInResArray(), 1U);
+}
+
+TEST_F(DrmHwcTest, InitializeConnectorPortsSortsExternalConnectorsCanonically) {
+  constexpr uint32_t kHdmi1ConnId = 120;
+  constexpr uint32_t kDp2ConnId = 130;
+  constexpr uint32_t kDp1ConnId = 140;
+  constexpr uint32_t kTypeIdOne = 1;
+  constexpr uint32_t kTypeIdTwo = 2;
+
+  auto* hdmi1 = fake_device->AddTypedConnector(kHdmi1ConnId,
+                                               DRM_MODE_CONNECTOR_HDMIA,
+                                               kTypeIdOne,
+                                               /*is_external=*/true, 0);
+  auto* dp2 = fake_device->AddTypedConnector(kDp2ConnId,
+                                             DRM_MODE_CONNECTOR_DisplayPort,
+                                             kTypeIdTwo,
+                                             /*is_external=*/true, 1);
+  auto* dp1 = fake_device->AddTypedConnector(kDp1ConnId,
+                                             DRM_MODE_CONNECTOR_DisplayPort,
+                                             kTypeIdOne,
+                                             /*is_external=*/true, 2);
+
+  fake_device->InitializeConnectorPorts();
+
+  EXPECT_EQ(dp1->GetIndexInResArray(), 0U);
+  EXPECT_EQ(dp2->GetIndexInResArray(), 1U);
+  EXPECT_EQ(hdmi1->GetIndexInResArray(), 2U);
+}
+
+TEST_F(DrmHwcTest, InitializeConnectorPortsExcludesWritebackConnectors) {
+  constexpr uint32_t kWritebackConnId = 110;
+  constexpr uint32_t kDp1ConnId = 140;
+  constexpr uint32_t kUntouchedWritebackIndex = 9;
+
+  auto* wb = fake_device->AddTypedConnector(kWritebackConnId,
+                                            DRM_MODE_CONNECTOR_WRITEBACK, 1,
+                                            /*is_external=*/false,
+                                            kUntouchedWritebackIndex);
+  auto* dp1 = fake_device->AddTypedConnector(kDp1ConnId,
+                                             DRM_MODE_CONNECTOR_DisplayPort, 1,
+                                             /*is_external=*/true, 1);
+
+  fake_device->InitializeConnectorPorts();
+
+  EXPECT_EQ(dp1->GetIndexInResArray(), 0U);
+  EXPECT_EQ(wb->GetIndexInResArray(), kUntouchedWritebackIndex);
+}
+
+TEST_F(DrmHwcTest, InitializeConnectorPortsReservesSlotsForIgnoredConnectors) {
+  constexpr uint32_t kEdpConnId = 200;
+  constexpr uint32_t kIgnoredDp1ConnId = 201;
+  constexpr uint32_t kActiveDp2ConnId = 202;
+  constexpr uint32_t kTypeIdOne = 1;
+  constexpr uint32_t kTypeIdTwo = 2;
+
+  auto* edp = fake_device->AddTypedConnector(kEdpConnId, DRM_MODE_CONNECTOR_eDP,
+                                             kTypeIdOne,
+                                             /*is_external=*/false, 0);
+  auto ignored_dp1 = std::make_unique<FakeDrmConnector>(fake_device.get(),
+                                                        kIgnoredDp1ConnId,
+                                                        /*is_external=*/true,
+                                                        kFakeConnectorMmWidth,
+                                                        kFakeConnectorMmHeight,
+                                                        kIgnoredDp1ConnId, 1);
+  ignored_dp1->InitRawConnector(DRM_MODE_CONNECTOR_DisplayPort, kTypeIdOne);
+  auto* ignored_dp1_ptr = ignored_dp1.get();
+  fake_device->AddIgnoredConnector(std::move(ignored_dp1));
+
+  auto* active_dp2 = fake_device
+                         ->AddTypedConnector(kActiveDp2ConnId,
+                                             DRM_MODE_CONNECTOR_DisplayPort,
+                                             kTypeIdTwo,
+                                             /*is_external=*/true, 2);
+
+  fake_device->InitializeConnectorPorts();
+
+  EXPECT_EQ(edp->GetIndexInResArray(), 0U);
+  EXPECT_EQ(ignored_dp1_ptr->GetIndexInResArray(), 1U);
+  EXPECT_EQ(active_dp2->GetIndexInResArray(), 2U);
+}
+
+TEST_F(DrmHwcTest,
+       InitializeConnectorPortsDropsConnectorsExceedingMaxPortsPerDevice) {
+  constexpr uint32_t kTotalOverflowConnectors = 66;
+  constexpr uint32_t kBaseConnectorId = 200;
+  constexpr uint32_t kMaxPortSlot = DrmDevice::kMaxPortsPerDevice - 1;
+
+  std::vector<FakeDrmConnector*> conns;
+  conns.reserve(kTotalOverflowConnectors);
+  for (uint32_t i = 0; i < kTotalOverflowConnectors; ++i) {
+    conns.push_back(
+        fake_device->AddTypedConnector(kBaseConnectorId + i,
+                                       DRM_MODE_CONNECTOR_DisplayPort, i + 1,
+                                       /*is_external=*/true, i));
+  }
+
+  fake_device->InitializeConnectorPorts();
+
+  ASSERT_EQ(fake_device->GetConnectors().size(), DrmDevice::kMaxPortsPerDevice);
+  EXPECT_EQ(conns[DrmDevice::kMaxPortsPerDevice - 1]->GetIndexInResArray(),
+            kMaxPortSlot);
+  EXPECT_EQ(fake_device->GetConnectors().back()->GetId(),
+            kBaseConnectorId + DrmDevice::kMaxPortsPerDevice - 1);
+}
+
 }  // namespace android::drm_hwcomposer

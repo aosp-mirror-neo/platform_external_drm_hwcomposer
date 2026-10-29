@@ -361,7 +361,7 @@ bool DrmConnector::IsExternal() const {
 
 bool DrmConnector::IsWriteback() const {
 #ifdef DRM_MODE_CONNECTOR_WRITEBACK
-  return connector_->connector_type == DRM_MODE_CONNECTOR_WRITEBACK;
+  return GetConnectorType() == DRM_MODE_CONNECTOR_WRITEBACK;
 #else
   return false;
 #endif

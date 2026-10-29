@@ -516,6 +516,13 @@ class FakeDrmConnector : public DrmConnector {
                         : DRM_MODE_CONNECTOR_eDP;
   }
 
+  uint32_t GetConnectorTypeId() const override {
+    if (connector_) {
+      return connector_->connector_type_id;
+    }
+    return connector_type_id_;
+  }
+
   uint32_t GetMmWidth() const override {
     return width_;
   }

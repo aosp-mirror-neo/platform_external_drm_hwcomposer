@@ -41,6 +41,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -229,6 +230,7 @@ auto DrmDevice::Init(const char *path) -> int {
       ignored_connectors_.emplace_back(std::move(conn));
     }
   }
+  InitializeConnectorPorts();
 
   auto plane_res = MakeDrmModePlaneResUnique(*GetFd());
   if (!plane_res) {
@@ -397,6 +399,55 @@ auto DrmDevice::CreateConnectorInstance(uint32_t connector_id, uint32_t index)
 auto DrmDevice::CommitAtomicReset(drmModeAtomicReq &pset) -> int {
   return drmModeAtomicCommit(*GetFd(), &pset, DRM_MODE_ATOMIC_ALLOW_MODESET,
                              this);
+}
+
+void DrmDevice::InitializeConnectorPorts() {
+  std::vector<DrmConnector *> native_conns;
+  for (const auto *list : {&connectors_, &ignored_connectors_}) {
+    for (const auto &c : *list) {
+      if (!c->IsWriteback() && !c->IsMst()) {
+        native_conns.push_back(c.get());
+      }
+    }
+  }
+
+  // Sort native non-MST connectors canonically with internal panels first,
+  // then by (connector_type, connector_type_id, connector_id), so primary
+  // internal displays always receive port 0 and physical external ports get
+  // deterministic port IDs regardless of kernel driver registration order.
+  std::sort(native_conns.begin(), native_conns.end(),
+            [](const DrmConnector *a, const DrmConnector *b) {
+              return std::make_tuple(!a->IsInternal(), a->GetConnectorType(),
+                                     a->GetConnectorTypeId(), a->GetId()) <
+                     std::make_tuple(!b->IsInternal(), b->GetConnectorType(),
+                                     b->GetConnectorTypeId(), b->GetId());
+            });
+
+  const size_t native_ports_count = std::min<size_t>(native_conns.size(),
+                                                     kMaxPortsPerDevice);
+  for (size_t i = 0; i < native_ports_count; ++i) {
+    native_conns[i]->SetIndexInResArray(static_cast<uint32_t>(i));
+  }
+
+  std::set<uint32_t> overflow_ids;
+  for (size_t i = native_ports_count; i < native_conns.size(); ++i) {
+    ALOGE(
+        "Native connector ID %u on KMS device %u exceeds max %u ports per "
+        "device; dropping connector to avoid display port ID collisions.",
+        native_conns[i]->GetId(), index_in_dev_array_, kMaxPortsPerDevice);
+    overflow_ids.insert(native_conns[i]->GetId());
+  }
+
+  if (!overflow_ids.empty()) {
+    auto keep_it = std::stable_partition(connectors_.begin(), connectors_.end(),
+                                         [&](const auto &conn) {
+                                           return overflow_ids.count(
+                                                      conn->GetId()) == 0;
+                                         });
+    std::move(keep_it, connectors_.end(),
+              std::back_inserter(ignored_connectors_));
+    connectors_.erase(keep_it, connectors_.end());
+  }
 }
 
 auto DrmDevice::SnapshotConnectorsUnderLock() const -> ConnectorSnapshot {
