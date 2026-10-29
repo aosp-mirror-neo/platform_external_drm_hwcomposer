@@ -81,6 +81,12 @@ class HwcWriteback {
     return buffer_;
   }
 
+  std::optional<WritebackBuffer> ConsumeBuffer() {
+    auto buffer = std::move(buffer_);
+    buffer_.reset();
+    return buffer;
+  }
+
   bool IsBufferConsumed() const {
     return !GetBuffer().has_value();
   }

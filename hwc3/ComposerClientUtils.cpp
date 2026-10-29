@@ -936,4 +936,22 @@ auto ToPixelFormat(::android::drm_hwcomposer::BufferFormat format)
   }
 }
 
+auto ToDataspace(::android::drm_hwcomposer::HwcColorspace colorspace)
+    -> common::Dataspace {
+  switch (colorspace) {
+    case ::android::drm_hwcomposer::HwcColorspace::kBt601:
+      return common::Dataspace::BT601_625;
+    case ::android::drm_hwcomposer::HwcColorspace::kDciP3:
+      return common::Dataspace::DISPLAY_P3;
+    case ::android::drm_hwcomposer::HwcColorspace::kBt2020:
+      return common::Dataspace::BT2020;
+    case ::android::drm_hwcomposer::HwcColorspace::kBt709:
+    case ::android::drm_hwcomposer::HwcColorspace::kDefault:
+      return common::Dataspace::SRGB;
+  }
+  ALOGW("Unsupported colorspace: %d, using SRGB instead.",
+        static_cast<int32_t>(colorspace));
+  return common::Dataspace::SRGB;
+}
+
 }  // namespace aidl::android::hardware::graphics::composer3::impl

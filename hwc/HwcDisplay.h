@@ -287,7 +287,8 @@ class HwcDisplay : public ICompositorDisplay {
   auto StartHdcp() -> bool;
   auto StopHdcp() -> bool;
 
-  auto GetWritebackBufferFormat() const -> std::optional<BufferFormat>;
+  auto GetWritebackBufferAttributes() const
+      -> std::optional<WritebackAttributes>;
   bool SetWritebackBuffer(const WritebackBuffer &buffer);
   SharedFd TakeWritebackBufferFence();
 
@@ -359,6 +360,10 @@ class HwcDisplay : public ICompositorDisplay {
 
   const HwcLayer &GetClientLayer() const override {
     return client_layer_;
+  }
+
+  std::shared_ptr<HwcWriteback> GetWriteback() const override {
+    return is_virtual_ ? nullptr : writeback_;
   }
 
   void SetVirtualDisplayResolution(uint16_t width, uint16_t height) {

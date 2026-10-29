@@ -416,6 +416,9 @@ cc_test_host {
     shared_libs: [
         "libhardware",
     ],
+    header_libs: [
+        "drm_hwcomposer_sdm_stub_headers",
+    ],
     cppflags: [
         "-DHAS_LZ4",
         "-D__INTRODUCED_IN(x)=",

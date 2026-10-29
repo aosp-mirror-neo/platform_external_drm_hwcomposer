@@ -2142,13 +2142,40 @@ bool HwcDisplay::ForcedScalingWithGpu() const {
   return hwc_->GetResMan().ForcedScalingWithGpu();
 }
 
-auto HwcDisplay::GetWritebackBufferFormat() const
-    -> std::optional<BufferFormat> {
-  if (IsInHeadlessMode() || is_virtual_ ||
-      pipeline_->FindWritebackConnectorForPipeline() == nullptr) {
+auto HwcDisplay::GetWritebackBufferAttributes() const
+    -> std::optional<WritebackAttributes> {
+  // Headless and virtual displays do not support display readback.
+  if (IsInHeadlessMode() || is_virtual_) {
     return std::nullopt;
   }
-  return HasHdrOutput() ? BufferFormat::kRgbaFp16 : BufferFormat::kRgba8888;
+  // Check whether the backend overrides writeback attributes or support.
+  if (pipeline_->capabilities) {
+    if (auto attrs = pipeline_->capabilities->GetWritebackAttributes()) {
+      return attrs;
+    }
+    auto wb_override = pipeline_->capabilities->GetWritebackSupportOverride();
+    if (wb_override.has_value()) {
+      // Backend explicitly reports that writeback is unsupported.
+      if (!*wb_override) {
+        return std::nullopt;
+      }
+      // Otherwise fall back to default SDR/HDR writeback attributes.
+      return WritebackAttributes{
+          .format = HasHdrOutput() ? BufferFormat::kRgbaFp16
+                                   : BufferFormat::kRgba8888,
+          .colorspace = HwcColorspace::kBt709,
+      };
+    }
+  }
+  // Without a backend override, writeback requires a DRM writeback connector.
+  if (pipeline_->FindWritebackConnectorForPipeline() == nullptr) {
+    return std::nullopt;
+  }
+  return WritebackAttributes{
+      .format = HasHdrOutput() ? BufferFormat::kRgbaFp16
+                               : BufferFormat::kRgba8888,
+      .colorspace = HwcColorspace::kBt709,
+  };
 }
 
 bool HwcDisplay::SetWritebackBuffer(const WritebackBuffer &buffer) {
@@ -2163,26 +2190,38 @@ bool HwcDisplay::SetWritebackBuffer(const WritebackBuffer &buffer) {
     return false;
   }
 
-  if (!buffer.fb) {
-    ALOGE(
-        "HwcDisplay: Writeback buffer not usable by DRM/KMS - no valid buffer "
-        "set");
-    return false;
+  bool use_backend_writeback = false;
+  if (!is_virtual_ && pipeline_->capabilities) {
+    auto wb_override = pipeline_->capabilities->GetWritebackSupportOverride();
+    if (wb_override.has_value()) {
+      if (!*wb_override) {
+        return false;
+      }
+      use_backend_writeback = true;
+    }
   }
 
   std::shared_ptr<BindingOwner<DrmConnector>> bound_connector;
-  if (is_virtual_) {
-    bound_connector = pipeline_->connector;
-  } else {
-    auto *wb_connector = pipeline_->FindWritebackConnectorForPipeline();
-    if (!wb_connector) {
-      ALOGE("HwcDisplay: No writeback connector found");
+  if (!use_backend_writeback) {
+    if (!buffer.fb) {
+      ALOGE(
+          "HwcDisplay: Writeback buffer not usable by DRM/KMS - no valid "
+          "buffer set");
       return false;
     }
-    bound_connector = wb_connector->BindPipeline(pipeline_.get());
-    if (!bound_connector) {
-      ALOGE("HwcDisplay: Failed to bind writeback connector");
-      return false;
+    if (is_virtual_) {
+      bound_connector = pipeline_->connector;
+    } else {
+      auto *wb_connector = pipeline_->FindWritebackConnectorForPipeline();
+      if (!wb_connector) {
+        ALOGE("HwcDisplay: No writeback connector found");
+        return false;
+      }
+      bound_connector = wb_connector->BindPipeline(pipeline_.get());
+      if (!bound_connector) {
+        ALOGE("HwcDisplay: Failed to bind writeback connector");
+        return false;
+      }
     }
   }
 

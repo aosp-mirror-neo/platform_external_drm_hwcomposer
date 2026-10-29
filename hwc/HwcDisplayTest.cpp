@@ -3700,12 +3700,12 @@ HwcLayer::Buffer CreateHdrTestLayerBuffer() {
 
 void ExpectWritebackFormat(const HwcDisplay& disp,
                            BufferFormat expected_format) {
-  const auto format = disp.GetWritebackBufferFormat();
-  if (!format.has_value()) {
-    ADD_FAILURE() << "Expected writeback format";
+  const auto attrs = disp.GetWritebackBufferAttributes();
+  if (!attrs.has_value()) {
+    ADD_FAILURE() << "Expected writeback attributes";
     return;
   }
-  EXPECT_EQ(*format, expected_format);
+  EXPECT_EQ(attrs->format, expected_format);
 }
 
 }  // namespace
@@ -3734,7 +3734,7 @@ TEST_F(HwcDisplayTest,
   });
   EXPECT_FALSE(sdr_display.HasHdrOutput());
   EXPECT_EQ(sdr_display.GetClientTargetFormat(), BufferFormat::kRgba8888);
-  EXPECT_FALSE(sdr_display.GetWritebackBufferFormat().has_value());
+  EXPECT_FALSE(sdr_display.GetWritebackBufferAttributes().has_value());
 
   fake_device->AddWritebackConnector(sdr_pipeline->encoder->Get()->GetId());
   ExpectWritebackFormat(sdr_display, BufferFormat::kRgba8888);
@@ -3759,7 +3759,7 @@ TEST_F(
 
   HwcDisplay hdr_display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
   hdr_display.SetPipeline(hdr_pipeline);
-  EXPECT_FALSE(hdr_display.GetWritebackBufferFormat().has_value());
+  EXPECT_FALSE(hdr_display.GetWritebackBufferAttributes().has_value());
 
   fake_device->AddWritebackConnector(hdr_pipeline->encoder->Get()->GetId());
 
@@ -3843,7 +3843,7 @@ TEST_F(HwcDisplayTest,
   ASSERT_FALSE(display.IsInHeadlessMode());
   ASSERT_EQ(display.GetDisplayType(), HwcDisplay::DisplayType::kVirtual);
   EXPECT_EQ(wb_conn->GetPipeline(), pipeline.get());
-  EXPECT_FALSE(display.GetWritebackBufferFormat().has_value());
+  EXPECT_FALSE(display.GetWritebackBufferAttributes().has_value());
 
   display.GetClientLayer().SetLayerProperties(
       CreateFullScreenFhdLayerProperties(
@@ -3932,7 +3932,7 @@ TEST_F(HwcDisplayTest,
 
   HwcDisplay headless_display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
   headless_display.SetPipeline(nullptr);
-  EXPECT_FALSE(headless_display.GetWritebackBufferFormat().has_value());
+  EXPECT_FALSE(headless_display.GetWritebackBufferAttributes().has_value());
   EXPECT_FALSE(headless_display.SetWritebackBuffer(wb_buffer));
   EXPECT_EQ(headless_display.TakeWritebackBufferFence(), nullptr);
 
@@ -3944,7 +3944,7 @@ TEST_F(HwcDisplayTest,
 
   HwcDisplay display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
   display.SetPipeline(pipeline);
-  EXPECT_FALSE(display.GetWritebackBufferFormat().has_value());
+  EXPECT_FALSE(display.GetWritebackBufferAttributes().has_value());
   EXPECT_FALSE(display.SetWritebackBuffer(wb_buffer));
   EXPECT_EQ(display.TakeWritebackBufferFence(), nullptr);
 }
@@ -4203,6 +4203,107 @@ TEST_F(HwcDisplayTest, PhysicalDisplayWritebackResetsBufferOnFailedCommit) {
                                                 release_fences));
   sink->ClearHistory();
   EXPECT_EQ(wb_conn->GetPipeline(), nullptr);
+  EXPECT_EQ(display.TakeWritebackBufferFence(), nullptr);
+
+  sink->SetExecuteCommitHook(nullptr);
+}
+
+class FakeWritebackCapabilities : public BackendDisplayCapabilities {
+ public:
+  std::optional<bool> GetWritebackSupportOverride() const override {
+    return true;
+  }
+
+  std::optional<WritebackAttributes> GetWritebackAttributes() const override {
+    return WritebackAttributes{
+        .format = BufferFormat::kRgba8888,
+        .colorspace = HwcColorspace::kBt709,
+    };
+  }
+};
+
+TEST_F(HwcDisplayTest,
+       BackendWritebackCapabilitiesOverrideWithoutDrmWritebackConnector) {
+  auto pipeline = CreatePipelineWithModes(
+      {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
+                         DRM_MODE_TYPE_PREFERRED, "1080p60")},
+      /*is_external=*/true);
+  ASSERT_NE(pipeline, nullptr);
+  pipeline->capabilities = std::make_unique<FakeWritebackCapabilities>();
+
+  HwcDisplay display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
+  display.SetPipeline(pipeline);
+  const auto writeback_attrs = display.GetWritebackBufferAttributes();
+  if (!writeback_attrs.has_value()) {
+    ADD_FAILURE() << "Expected writeback attributes";
+    return;
+  }
+  EXPECT_EQ(writeback_attrs->format, BufferFormat::kRgba8888);
+  EXPECT_EQ(writeback_attrs->colorspace, HwcColorspace::kBt709);
+
+  constexpr ILayerId kLayerId = 1;
+  ASSERT_TRUE(display.CreateLayer(kLayerId));
+  HwcLayer* layer = display.get_layer(kLayerId);
+  ASSERT_NE(layer, nullptr);
+  layer->SetLayerProperties(CreateFullScreenFhdLayerProperties(
+      std::make_shared<FakeFbIdHandle>(kTestFbId)));
+
+  BufferInfo bo{};
+  bo.width = kFhdWidth;
+  bo.height = kFhdHeight;
+  bo.format = DRM_FORMAT_ABGR8888;
+  bo.pitches[0] = kFhdWidth * kBytesPerPixel;
+  bo.prime_fds[0] = 1;
+
+  // Backend writeback override does not require a DRM framebuffer ID handle
+  // (e.g. SdmBackend uses StubFbImporter) or a DRM writeback connector.
+  ASSERT_TRUE(display.SetWritebackBuffer(WritebackBuffer{
+      .bi = bo,
+      .fb = nullptr,
+      .fence = {},
+  }));
+  ASSERT_NE(display.GetWriteback(), nullptr);
+  EXPECT_EQ(display.GetWriteback()->GetConnector(), nullptr);
+  EXPECT_FALSE(display.GetWriteback()->IsBufferConsumed());
+
+  auto* sink = fake_device->GetFakeAtomicCommitSink();
+  sink->SetDriveStateManager(false);
+  TemporaryFile complete_tf;
+  const SharedFd complete_source_fd = MakeSharedFd(complete_tf.release());
+  sink->SetExecuteCommitHook(
+      [&](const std::vector<std::pair<AtomicStateManager*, AtomicCommitArgs>>&
+              args) {
+        const auto& wb = args.front().second.writeback;
+        if (wb && !wb->IsBufferConsumed()) {
+          wb->SetOutFence(MakeSharedFd(DupFd(complete_source_fd)));
+        }
+        return CommitStatusOr<
+            std::vector<std::pair<AtomicStateManager*, AtomicCommitResult>>>(
+            std::vector<std::pair<AtomicStateManager*, AtomicCommitResult>>{
+                {args.front().first, AtomicCommitResult{}},
+            });
+      });
+  sink->ClearHistory();
+
+  (void)display.ValidateStagedComposition();
+  display.AcceptValidatedComposition();
+  SharedFd present_fence;
+  std::vector<HwcDisplay::ReleaseFence> release_fences;
+  ASSERT_TRUE(display.PresentStagedComposition(std::nullopt, present_fence,
+                                               release_fences));
+  ASSERT_EQ(sink->GetCommitHistory().size(), 1U);
+  ASSERT_NE(sink->GetCommitHistory()[0][0].writeback, nullptr);
+  EXPECT_TRUE(sink->GetCommitHistory()[0][0].writeback->IsBufferConsumed());
+
+  // Present a second frame without calling TakeWritebackBufferFence; readback
+  // must stay disarmed and clear the completed HwcWriteback.
+  (void)display.ValidateStagedComposition();
+  display.AcceptValidatedComposition();
+  ASSERT_TRUE(display.PresentStagedComposition(std::nullopt, present_fence,
+                                               release_fences));
+  ASSERT_EQ(sink->GetCommitHistory().size(), 2U);
+  EXPECT_EQ(sink->GetCommitHistory()[1][0].writeback, nullptr);
+  EXPECT_EQ(display.GetWriteback(), nullptr);
   EXPECT_EQ(display.TakeWritebackBufferFence(), nullptr);
 
   sink->SetExecuteCommitHook(nullptr);

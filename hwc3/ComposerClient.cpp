@@ -41,9 +41,7 @@
 #include <android/binder_auto_utils.h>
 #include <android/binder_ibinder_platform.h>
 #include <cutils/native_handle.h>
-#include <ui/GraphicBufferMapper.h>
 #include <ui/GraphicTypes.h>
-#include <utils/Errors.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -633,12 +631,12 @@ ndk::ScopedAStatus ComposerClient::getReadbackBufferAttributes(
     if (display == nullptr)
       return ToBinderStatus(hwc3::Error::kBadDisplay);
 
-    const auto format = display->GetWritebackBufferFormat();
-    if (!format)
+    const auto readback_attrs = display->GetWritebackBufferAttributes();
+    if (!readback_attrs)
       return ToBinderStatus(hwc3::Error::kUnsupported);
 
-    attrs->format = ToPixelFormat(*format);
-    attrs->dataspace = common::Dataspace::SRGB;
+    attrs->format = ToPixelFormat(readback_attrs->format);
+    attrs->dataspace = ToDataspace(readback_attrs->colorspace);
   }
 
   return ndk::ScopedAStatus::ok();
@@ -1097,22 +1095,21 @@ ndk::ScopedAStatus ComposerClient::setReadbackBuffer(
     return ToBinderStatus(hwc3::Error::kBadParameter);
   }
 
-  buffer_handle_t imported_handle = nullptr;
-  auto result = ::android::GraphicBufferMapper::get()
-                    .importBufferNoValidate(raw_buffer.get(), &imported_handle);
-
-  if (result != ::android::OK) {
-    ALOGE("ComposerClient: Failed to import readback buffer handle: %d",
-          result);
+  auto imported_handle = ::android::drm_hwcomposer::BufferInfoGetter::
+                             GetInstance()
+                                 ->Import(raw_buffer.get());
+  if (imported_handle == nullptr) {
+    ALOGE("ComposerClient: Failed to import readback buffer handle");
     return ToBinderStatus(hwc3::Error::kBadParameter);
   }
 
   auto bi = ::android::drm_hwcomposer::BufferInfoGetter::GetInstance()
-                ->GetBoInfo(imported_handle);
+                ->GetBoInfo(imported_handle->GetHandle());
   if (bi == std::nullopt) {
     ALOGE("Failed to get BufferInfo for readback buffer.");
     return ToBinderStatus(hwc3::Error::kBadParameter);
   }
+  bi->fds_shared = imported_handle;
 
   HwcLayer::Buffer buffer{
       .bi = bi.value(),
