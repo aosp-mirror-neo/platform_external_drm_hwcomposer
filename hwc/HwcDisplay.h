@@ -118,6 +118,10 @@ class HwcDisplay : public ICompositorDisplay {
   HwcDisplay(const HwcDisplay &) = delete;
   ~HwcDisplay() override;
 
+  // Returns true if the display supports HDR and there are HDR layers in the
+  // scene.
+  bool HasHdrOutput() const;
+  auto GetClientTargetFormat() const -> BufferFormat;
   auto GetWritebackBufferFormat() const -> BufferFormat;
 
   auto GetColorTransformMatrix() const

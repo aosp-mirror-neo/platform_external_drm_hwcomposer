@@ -2263,7 +2263,7 @@ bool HwcDisplay::NeedsClientLayerUpdate() const {
   });
 }
 
-auto HwcDisplay::GetWritebackBufferFormat() const -> BufferFormat {
+bool HwcDisplay::HasHdrOutput() const {
   const bool has_hdr_layer = std::any_of(layers_.begin(), layers_.end(),
                                          [](const auto &pair) {
                                            const auto tf = pair.second
@@ -2272,8 +2272,15 @@ auto HwcDisplay::GetWritebackBufferFormat() const -> BufferFormat {
                                            return tf == TransferFunction::kPq ||
                                                   tf == TransferFunction::kHlg;
                                          });
-  return (has_hdr_support_ && has_hdr_layer) ? BufferFormat::kRgbaFp16
-                                             : BufferFormat::kRgba8888;
+  return has_hdr_support_ && has_hdr_layer;
+}
+
+auto HwcDisplay::GetClientTargetFormat() const -> BufferFormat {
+  return HasHdrOutput() ? BufferFormat::kRgbaFp16 : BufferFormat::kRgba8888;
+}
+
+auto HwcDisplay::GetWritebackBufferFormat() const -> BufferFormat {
+  return HasHdrOutput() ? BufferFormat::kRgbaFp16 : BufferFormat::kRgba8888;
 }
 
 bool HwcDisplay::CanReuseLayerForModeset(uint32_t width,

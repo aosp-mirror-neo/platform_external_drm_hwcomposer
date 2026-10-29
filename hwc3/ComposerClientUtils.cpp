@@ -629,7 +629,7 @@ void ExecuteSetDisplayClientTarget(DrmHwc& hwc, int64_t display_handle,
 
   cmd_result_writer.AddClientTarget(display_handle, command.dataspace,
                                     ToPixelFormat(
-                                        display->GetWritebackBufferFormat()));
+                                        display->GetClientTargetFormat()));
 }
 
 void ExecuteSetDisplayOutputBuffer(DrmHwc& hwc, int64_t display_handle,
@@ -834,8 +834,7 @@ void ExecuteDisplayCommand(DrmHwcThree& hwc, const DisplayCommand& command,
     }
     cmd_result_writer.AddChanges(changes);
 
-    auto buffer_format = display->GetWritebackBufferFormat();
-    if (buffer_format == ::android::drm_hwcomposer::BufferFormat::kRgbaFp16) {
+    if (display->HasHdrOutput()) {
       std::vector<DisplayLuts::LayerLut> layer_luts;
       constexpr int32_t kLutSize = ColorUtil::kHdrBoostLut.size();
       const SharedFd& lut_fd = GetCachedHdrBoostLutFd();

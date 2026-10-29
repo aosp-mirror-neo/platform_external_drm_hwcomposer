@@ -3674,4 +3674,109 @@ TEST_F(HwcDisplayTest, GetPortClampsConnectorPortOverflowInsteadOfWrapping) {
   display.SetPipeline(nullptr);
 }
 
+namespace {
+
+class FakeHdrCapabilities : public BackendDisplayCapabilities {
+ public:
+  std::optional<std::vector<Hdr>> GetHdrTypesOverride() const override {
+    return std::vector<Hdr>{Hdr::HDR10, Hdr::HLG};
+  }
+};
+
+HwcLayer::Buffer CreateHdrTestLayerBuffer() {
+  BufferInfo bo{};
+  bo.width = kFhdWidth;
+  bo.height = kFhdHeight;
+  bo.format = DRM_FORMAT_ABGR8888;
+  bo.pitches[0] = kFhdWidth * kBytesPerPixel;
+  bo.prime_fds[0] = 1;
+  return HwcLayer::Buffer{
+      .bi = bo,
+      .fb = std::make_shared<FakeFbIdHandle>(kTestFbId),
+      .fence = {},
+  };
+}
+
+}  // namespace
+
+TEST_F(HwcDisplayTest,
+       SdrDisplayWithHdrLayerUsesRgba8888ClientTargetAndWritebackFormat) {
+  ScopedTestProperty device_path("vendor.hwc.drm.device", "/nonexistent");
+  ScopedTestProperty external_hdr_prop("vendor.hwc.drm.external_hdr_enabled",
+                                       "1");
+  hwc.GetResMan().Init();
+
+  auto sdr_pipeline = CreatePipelineWithModes(
+      {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
+                         DRM_MODE_TYPE_PREFERRED, "1080p60")},
+      /*is_external=*/true);
+  ASSERT_NE(sdr_pipeline, nullptr);
+
+  HwcDisplay sdr_display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
+  sdr_display.SetPipeline(sdr_pipeline);
+
+  constexpr ILayerId kLayerId = 1;
+  ASSERT_TRUE(sdr_display.CreateLayer(kLayerId));
+  sdr_display.get_layer(kLayerId)->SetLayerProperties({
+      .buffer = CreateHdrTestLayerBuffer(),
+      .transfer_func = TransferFunction::kPq,
+  });
+  EXPECT_FALSE(sdr_display.HasHdrOutput());
+  EXPECT_EQ(sdr_display.GetClientTargetFormat(), BufferFormat::kRgba8888);
+  EXPECT_EQ(sdr_display.GetWritebackBufferFormat(), BufferFormat::kRgba8888);
+
+  hwc.GetResMan().DeInit();
+}
+
+TEST_F(
+    HwcDisplayTest,
+    HdrDisplayUsesRgbaFp16ClientTargetAndWritebackFormatWhenHdrLayerPresent) {
+  ScopedTestProperty device_path("vendor.hwc.drm.device", "/nonexistent");
+  ScopedTestProperty external_hdr_prop("vendor.hwc.drm.external_hdr_enabled",
+                                       "1");
+  hwc.GetResMan().Init();
+
+  auto hdr_pipeline = CreatePipelineWithModes(
+      {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
+                         DRM_MODE_TYPE_PREFERRED, "1080p60")},
+      /*is_external=*/true);
+  ASSERT_NE(hdr_pipeline, nullptr);
+  hdr_pipeline->capabilities = std::make_unique<FakeHdrCapabilities>();
+
+  HwcDisplay hdr_display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
+  hdr_display.SetPipeline(hdr_pipeline);
+
+  EXPECT_FALSE(hdr_display.HasHdrOutput());
+  EXPECT_EQ(hdr_display.GetClientTargetFormat(), BufferFormat::kRgba8888);
+  EXPECT_EQ(hdr_display.GetWritebackBufferFormat(), BufferFormat::kRgba8888);
+
+  constexpr ILayerId kLayerId = 1;
+  ASSERT_TRUE(hdr_display.CreateLayer(kLayerId));
+  HwcLayer* hdr_layer = hdr_display.get_layer(kLayerId);
+  ASSERT_NE(hdr_layer, nullptr);
+
+  hdr_layer->SetLayerProperties({
+      .buffer = CreateHdrTestLayerBuffer(),
+      .transfer_func = TransferFunction::kSrgb,
+  });
+  EXPECT_FALSE(hdr_display.HasHdrOutput());
+  EXPECT_EQ(hdr_display.GetClientTargetFormat(), BufferFormat::kRgba8888);
+  EXPECT_EQ(hdr_display.GetWritebackBufferFormat(), BufferFormat::kRgba8888);
+
+  hdr_layer->SetLayerProperties({
+      .transfer_func = TransferFunction::kPq,
+  });
+  EXPECT_TRUE(hdr_display.HasHdrOutput());
+  EXPECT_EQ(hdr_display.GetClientTargetFormat(), BufferFormat::kRgbaFp16);
+  EXPECT_EQ(hdr_display.GetWritebackBufferFormat(), BufferFormat::kRgbaFp16);
+
+  hdr_layer->SetLayerProperties({
+      .transfer_func = TransferFunction::kHlg,
+  });
+  EXPECT_TRUE(hdr_display.HasHdrOutput());
+  EXPECT_EQ(hdr_display.GetClientTargetFormat(), BufferFormat::kRgbaFp16);
+  EXPECT_EQ(hdr_display.GetWritebackBufferFormat(), BufferFormat::kRgbaFp16);
+
+  hwc.GetResMan().DeInit();
+}
 }  // namespace android::drm_hwcomposer
