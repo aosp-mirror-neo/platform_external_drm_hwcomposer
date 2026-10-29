@@ -3613,7 +3613,7 @@ TEST_F(HwcDisplayTest, GetPortReturnsZeroForWritebackVirtualDisplay) {
 TEST_F(HwcDisplayTest, GetPortEncodesDeviceOrdinalInUpperBits) {
   constexpr uint32_t kDeviceOrdinalOne = 1;
   constexpr uint32_t kConnectorPortIndex = 3;
-  constexpr uint8_t kExpectedPort = 35U;
+  constexpr uint8_t kExpectedPort = 67U;
 
   FakeDrmDevice dev(&hwc.GetResMan(), kDeviceOrdinalOne);
   dev.GetFakeAtomicCommitSink()->SetDriveStateManager(true);
@@ -3623,6 +3623,54 @@ TEST_F(HwcDisplayTest, GetPortEncodesDeviceOrdinalInUpperBits) {
   HwcDisplay display(/*handle=*/1, /*is_virtual=*/false, &hwc);
   ASSERT_TRUE(display.SetPipeline(dev.GetBackend().CreatePipeline(*conn)));
   EXPECT_EQ(display.GetPort(), kExpectedPort);
+  display.SetPipeline(nullptr);
+}
+
+TEST_F(HwcDisplayTest, GetPortPreservesSixBitConnectorPortIndex) {
+  constexpr uint32_t kDeviceOrdinalOne = 1;
+  constexpr uint32_t kHighConnectorPortIndex = 45;
+  constexpr uint8_t kExpectedPort = 109U;
+
+  FakeDrmDevice dev(&hwc.GetResMan(), kDeviceOrdinalOne);
+  dev.GetFakeAtomicCommitSink()->SetDriveStateManager(true);
+  auto* conn = dev.AddPipelineResourcesAtIndex(kHighConnectorPortIndex,
+                                               /*is_external=*/true);
+
+  HwcDisplay display(/*handle=*/1, /*is_virtual=*/false, &hwc);
+  ASSERT_TRUE(display.SetPipeline(dev.GetBackend().CreatePipeline(*conn)));
+  EXPECT_EQ(display.GetPort(), kExpectedPort);
+  display.SetPipeline(nullptr);
+}
+
+TEST_F(HwcDisplayTest, GetPortClampsDeviceOrdinalOverflowInsteadOfWrapping) {
+  constexpr uint32_t kOverflowDeviceOrdinal = 4;
+  constexpr uint32_t kConnectorPortIndex = 5;
+  constexpr uint8_t kExpectedClampedPort = 197U;  // (3 << 6) | 5
+
+  FakeDrmDevice dev(&hwc.GetResMan(), kOverflowDeviceOrdinal);
+  dev.GetFakeAtomicCommitSink()->SetDriveStateManager(true);
+  auto* conn = dev.AddPipelineResourcesAtIndex(kConnectorPortIndex,
+                                               /*is_external=*/true);
+
+  HwcDisplay display(/*handle=*/1, /*is_virtual=*/false, &hwc);
+  ASSERT_TRUE(display.SetPipeline(dev.GetBackend().CreatePipeline(*conn)));
+  EXPECT_EQ(display.GetPort(), kExpectedClampedPort);
+  display.SetPipeline(nullptr);
+}
+
+TEST_F(HwcDisplayTest, GetPortClampsConnectorPortOverflowInsteadOfWrapping) {
+  constexpr uint32_t kDeviceOrdinalOne = 1;
+  constexpr uint32_t kOverflowConnectorPortIndex = 64;
+  constexpr uint8_t kExpectedClampedPort = 127U;  // (1 << 6) | 63
+
+  FakeDrmDevice dev(&hwc.GetResMan(), kDeviceOrdinalOne);
+  dev.GetFakeAtomicCommitSink()->SetDriveStateManager(true);
+  auto* conn = dev.AddPipelineResourcesAtIndex(kOverflowConnectorPortIndex,
+                                               /*is_external=*/true);
+
+  HwcDisplay display(/*handle=*/1, /*is_virtual=*/false, &hwc);
+  ASSERT_TRUE(display.SetPipeline(dev.GetBackend().CreatePipeline(*conn)));
+  EXPECT_EQ(display.GetPort(), kExpectedClampedPort);
   display.SetPipeline(nullptr);
 }
 

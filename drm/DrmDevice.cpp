@@ -109,6 +109,14 @@ auto DrmDevice::Init(const char *path) -> int {
       return -ENODEV;
     }
 
+    if (index_in_dev_array_ >= kMaxKmsDevices) {
+      ALOGE(
+          "Reached maximum of %u KMS display devices for 8-bit port encoding; "
+          "dropping %s to avoid display port ID collisions.",
+          kMaxKmsDevices, path);
+      return -ENOSPC;
+    }
+
     // Without CAP_SYS_ADMIN, the kernel only allows drmSetMaster() if the fd
     // was auto-granted master at open() time (file_priv->was_master == true),
     // in which case drmSetMaster() succeeds as a no-op. If another process

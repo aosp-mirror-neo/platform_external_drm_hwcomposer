@@ -50,6 +50,9 @@ class DrmDevice {
   friend class FakeCompositorDrmDevice;
 
  public:
+  static constexpr uint32_t kMaxKmsDevices = 4;
+  static constexpr uint32_t kMaxPortsPerDevice = 64;
+
   virtual ~DrmDevice();
 
   static auto CreateInstance(std::string const &path, ResourceManager *res_man,
