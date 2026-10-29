@@ -1130,8 +1130,6 @@ ndk::ScopedAStatus ComposerClient::setReadbackBuffer(
     return ToBinderStatus(hwc3::Error::kBadParameter);
   }
   HwcLayer::LayerProperties properties;
-  ndk::ScopedFileDescriptor release_fence = ndk::ScopedFileDescriptor(
-      release_fence_in.get());
   properties.blend_mode = BufferBlendMode::kNone;
   auto bi = ::android::drm_hwcomposer::BufferInfoGetter::GetInstance()
                 ->GetBoInfo(imported_handle);
@@ -1142,7 +1140,8 @@ ndk::ScopedAStatus ComposerClient::setReadbackBuffer(
   properties.buffer = {
       .bi = bi.value(),
       .fb = std::static_pointer_cast<IDrmFbIdHandle>(ImportFb(display, *bi)),
-      .fence = ::android::drm_hwcomposer::MakeSharedFd(release_fence.release()),
+      .fence = ::android::drm_hwcomposer::MakeSharedFd(
+          ::android::drm_hwcomposer::DupFd(release_fence_in.get())),
   };
   writeback_layer->SetLayerProperties(properties);
 
