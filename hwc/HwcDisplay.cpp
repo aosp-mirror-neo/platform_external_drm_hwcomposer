@@ -68,6 +68,7 @@
 #include "drm/VSyncWorker.h"
 #include "hwc/HwcDisplayConfigs.h"
 #include "hwc/HwcLayer.h"
+#include "hwc/HwcWriteback.h"
 #include "stats/DisplayConfigurationResultReporter.h"
 #include "stats/DisplayHotplugConnectModeDetectedAtomReporter.h"
 #include "stats/Stats.h"
@@ -161,10 +162,6 @@ auto HwcDisplay::GetDisplayConfigs() const -> std::vector<HwcDisplayConfig> {
 
 HwcDisplay::HwcDisplay(DisplayHandle handle, bool is_virtual, DrmHwc *hwc)
     : hwc_(hwc), handle_(handle), is_virtual_(is_virtual), client_layer_(this) {
-  // Create writeback layer for both virtual displays and potential readback
-  // operations
-  writeback_layer_ = std::make_unique<HwcLayer>(this);
-
   display_mode_reporter_ = DisplayHotplugConnectModeDetectedAtomReporter::
       Create();
   config_result_reporter_ = DisplayConfigurationResultReporter::Create();
@@ -555,6 +552,16 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
     }
   }
 
+  // If a prior one-shot writeback already consumed its buffer and the client
+  // never called TakeWritebackBufferFence(), discard it before validating the
+  // next frame.
+  if (!is_virtual_ && writeback_ && writeback_->IsBufferConsumed()) {
+    ALOGW(
+        "HwcDisplay: Writeback buffer was consumed without taking the "
+        "out-fence; resetting writeback");
+    writeback_.reset();
+  }
+
   auto [composition,
         short_circuited] = pipeline_->planner->ValidateDisplay(this);
   validated_composition_.emplace(std::move(composition));
@@ -686,6 +693,15 @@ auto HwcDisplay::PresentStagedComposition(
       }
     }
   } else {
+    if (!is_virtual_ && writeback_) {
+      ALOGE_IF(writeback_->IsBufferConsumed(),
+               "HwcDisplay: Writeback buffer was consumed without taking the "
+               "out-fence; resetting writeback");
+      ALOGE_IF(!writeback_->IsBufferConsumed(),
+               "HwcDisplay: Cannot present physical display writeback without "
+               "prior validation; resetting writeback");
+      writeback_.reset();
+    }
     attributes.validation_result = ValidationResult::kSkip;
     validated_composition_ = CompositionPlanner::ValidatedComposition{};
     for (const auto &[id, layer] : layers_) {
@@ -975,6 +991,7 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
     if (!GetPipe().atomic_state_manager->IsActive() && !has_kernel_crtc) {
       defer_modeset_until_power_on_ = true;
       last_presented_composition_.Reset();
+      writeback_.reset();
       return HwcDisplay::Error::kNone;
     }
     requires_reprobe_on_power_on_ = true;
@@ -1006,6 +1023,7 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
   } else {
     defer_modeset_until_power_on_ = true;
     last_presented_composition_.Reset();
+    writeback_.reset();
   }
   return HwcDisplay::Error::kNone;
 }
@@ -1081,6 +1099,7 @@ void HwcDisplay::Deinit() {
     validated_composition_.reset();
     ClearStagedModeConfig();
     staged_power_mode_.reset();
+    writeback_.reset();
     flatcon_.reset();
     hdcpcon_.reset();
     backlight_controller_.reset();
@@ -1293,7 +1312,6 @@ bool HwcDisplay::Init() {
   if (is_virtual_) {
     configs_ = configs_generator_.GetFakeMode(virtual_disp_width_,
                                               virtual_disp_height_);
-    pipeline_->writeback_connector = pipeline_->connector;
   } else if (IsInHeadlessMode()) {
     configs_ = configs_generator_.GetFakeMode(0, 0);
   } else {
@@ -1872,15 +1890,11 @@ std::optional<AtomicCommitArgs> HwcDisplay::CreateFrameUpdateCommit(
     a_args.color_matrix = render_intent_matrix_;
   }
 
-  if (pipeline_->writeback_connector) {
-    if (!writeback_layer_->IsLayerUsableAsDevice()) {
-      ALOGE("Writeback layer not usable by DRM/KMS - no valid buffer set");
-      return std::nullopt;
-    }
-    a_args.writeback_fb = writeback_layer_->GetLayerData().fb;
-    a_args.writeback_release_fence = writeback_layer_->GetLayerData()
-                                         .acquire_fence;
+  if (is_virtual_ && !writeback_) {
+    ALOGE("Virtual display has no writeback buffer set");
+    return std::nullopt;
   }
+  a_args.writeback = writeback_;
   return a_args;
 }
 
@@ -1997,6 +2011,9 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
         GetConfig(*staged_mode_config_id_) == nullptr) {
       ClearStagedModeConfig();
     }
+    if (!is_virtual_) {
+      writeback_.reset();
+    }
     last_presented_composition_.Reset();
     return CommitStatus::InternalFailure();
   }
@@ -2014,18 +2031,19 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
         hwc_->SendRefreshEventToClient(handle_);
       }
     }
+    if (!is_virtual_) {
+      writeback_.reset();
+    }
     last_presented_composition_.Reset();
     return status_or_result.GetStatus();
   }
 
   out_present_fence = result->present_fence;
-  ApplyCommitChanges(*a_args, result.value());
+  ApplyCommitChanges(*a_args);
   return CommitStatus::Success();
 }
 
-void HwcDisplay::ApplyCommitChanges(const AtomicCommitArgs &a_args,
-                                    const AtomicCommitResult &result) {
-  writeback_complete_fence_ = result.writeback_complete_fence;
+void HwcDisplay::ApplyCommitChanges(const AtomicCommitArgs &a_args) {
   if (a_args.power_mode) {
     staged_power_mode_.reset();
     if (*a_args.power_mode != PowerMode::kOff) {
@@ -2124,48 +2142,69 @@ bool HwcDisplay::ForcedScalingWithGpu() const {
   return hwc_->GetResMan().ForcedScalingWithGpu();
 }
 
-bool HwcDisplay::IsWritebackSupported() const {
-  return !IsInHeadlessMode() && !is_virtual_ &&
-         pipeline_->FindWritebackConnectorForPipeline() != nullptr;
+auto HwcDisplay::GetWritebackBufferFormat() const
+    -> std::optional<BufferFormat> {
+  if (IsInHeadlessMode() || is_virtual_ ||
+      pipeline_->FindWritebackConnectorForPipeline() == nullptr) {
+    return std::nullopt;
+  }
+  return HasHdrOutput() ? BufferFormat::kRgbaFp16 : BufferFormat::kRgba8888;
 }
 
-bool HwcDisplay::SetWritebackEnabled(bool enabled) {
+bool HwcDisplay::SetWritebackBuffer(const WritebackBuffer &buffer) {
+  if (!is_virtual_ && validated_composition_.has_value()) {
+    ALOGE(
+        "HwcDisplay: Cannot set writeback buffer between validate and present");
+    return false;
+  }
+
+  writeback_.reset();
   if (IsInHeadlessMode()) {
     return false;
   }
 
-  // Handle Disable
-  if (!enabled) {
-    pipeline_->writeback_connector = nullptr;
-    return true;
-  }
-
-  // Handle Enable
-  if (pipeline_->writeback_connector != nullptr) {
-    return true;
-  }
-
-  auto *wb_connector = pipeline_->FindWritebackConnectorForPipeline();
-  if (!wb_connector) {
-    ALOGE("HwcDisplay: No writeback connector found");
+  if (!buffer.fb) {
+    ALOGE(
+        "HwcDisplay: Writeback buffer not usable by DRM/KMS - no valid buffer "
+        "set");
     return false;
   }
-  auto bound_connector = wb_connector->BindPipeline(pipeline_.get());
-  if (!bound_connector) {
-    ALOGE("HwcDisplay: Failed to bind writeback connector");
-    return false;
+
+  std::shared_ptr<BindingOwner<DrmConnector>> bound_connector;
+  if (is_virtual_) {
+    bound_connector = pipeline_->connector;
+  } else {
+    auto *wb_connector = pipeline_->FindWritebackConnectorForPipeline();
+    if (!wb_connector) {
+      ALOGE("HwcDisplay: No writeback connector found");
+      return false;
+    }
+    bound_connector = wb_connector->BindPipeline(pipeline_.get());
+    if (!bound_connector) {
+      ALOGE("HwcDisplay: Failed to bind writeback connector");
+      return false;
+    }
   }
-  pipeline_->writeback_connector = bound_connector;
+
+  writeback_ = std::make_shared<HwcWriteback>(std::move(bound_connector),
+                                              buffer);
   return true;
 }
 
-SharedFd HwcDisplay::GetWritebackBufferFence() {
-  if (!writeback_complete_fence_) {
+SharedFd HwcDisplay::TakeWritebackBufferFence() {
+  if (is_virtual_ || !writeback_ || !writeback_->IsBufferConsumed()) {
     ALOGE("HwcDisplay: No readback fence available for display");
     return nullptr;
   }
 
-  return std::move(writeback_complete_fence_);
+  SharedFd fence = writeback_->TakeOutFence();
+  writeback_.reset();
+  if (!fence || *fence < 0) {
+    ALOGE("HwcDisplay: Invalid readback fence for display");
+    return nullptr;
+  }
+
+  return fence;
 }
 
 std::vector<const HwcLayer *> HwcDisplay::GetOrderLayersByZPos() const {
@@ -2276,10 +2315,6 @@ bool HwcDisplay::HasHdrOutput() const {
 }
 
 auto HwcDisplay::GetClientTargetFormat() const -> BufferFormat {
-  return HasHdrOutput() ? BufferFormat::kRgbaFp16 : BufferFormat::kRgba8888;
-}
-
-auto HwcDisplay::GetWritebackBufferFormat() const -> BufferFormat {
   return HasHdrOutput() ? BufferFormat::kRgbaFp16 : BufferFormat::kRgba8888;
 }
 

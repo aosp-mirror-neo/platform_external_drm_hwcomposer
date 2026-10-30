@@ -374,6 +374,7 @@ cc_test_host {
         "hwc/HwcDisplayConfigsGeneratorTest.cpp",
         "hwc/HwcDisplayTest.cpp",
         "hwc/HwcLayer.cpp",
+        "hwc/HwcWritebackTest.cpp",
         "stats/CompositionStatsAtomReporter.cpp",
         "stats/CountActiveDisplaysReporter.cpp",
         "stats/DisplayConfigurationResultReporter.cpp",

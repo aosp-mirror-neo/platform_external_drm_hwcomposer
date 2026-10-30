@@ -641,13 +641,18 @@ void ExecuteSetDisplayOutputBuffer(DrmHwc& hwc, int64_t display_handle,
     return;
   }
 
-  auto& writeback_layer = display->GetWritebackLayer();
-  if (!writeback_layer) {
+  if (display->GetDisplayType() != HwcDisplay::DisplayType::kVirtual) {
     cmd_result_writer.AddError(hwc3::Error::kBadLayer);
     return;
   }
 
-  auto buffer_cache = GetBufferCache(display, *writeback_layer);
+  auto hwc3_display = DrmHwcThree::GetHwc3Display(*display);
+  if (!hwc3_display->output_buffer_cache) {
+    hwc3_display->output_buffer_cache = std::make_shared<GrallocBufferCache>(
+        [display](auto& bi) -> std::shared_ptr<DrmFbIdHandle> {
+          return ImportFb(display, bi);
+        });
+  }
 
   std::unique_ptr<const native_handle_t, NativeHandleDeleter> raw_buffer;
   if (buffer.handle) {
@@ -657,21 +662,15 @@ void ExecuteSetDisplayOutputBuffer(DrmHwc& hwc, int64_t display_handle,
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
   auto fence = const_cast<::ndk::ScopedFileDescriptor&>(buffer.fence).release();
 
-  HwcLayer::LayerProperties properties = {
-      .buffer = buffer_cache->HandleNextBuffer(raw_buffer
-                                                   ? std::make_optional(
-                                                         raw_buffer.get())
-                                                   : std::nullopt,
-                                               MakeSharedFd(fence),
-                                               buffer.slot),
-  };
-
-  if (!properties.buffer) {
+  auto hwc_buffer = hwc3_display->output_buffer_cache
+                        ->HandleNextBuffer(raw_buffer ? std::make_optional(
+                                                            raw_buffer.get())
+                                                      : std::nullopt,
+                                           MakeSharedFd(fence), buffer.slot);
+  if (!hwc_buffer || !display->SetWritebackBuffer(*hwc_buffer)) {
     cmd_result_writer.AddError(hwc3::Error::kBadLayer);
     return;
   }
-
-  writeback_layer->SetLayerProperties(properties);
 }
 
 const SharedFd& GetCachedHdrBoostLutFd() {
