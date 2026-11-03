@@ -99,6 +99,7 @@ class HwcDisplay : public ICompositorDisplay {
 
   enum ConfigError {
     kNone,
+    kBadDisplay,
     kBadConfig,
     kSeamlessNotAllowed,
     kSeamlessNotPossible,
