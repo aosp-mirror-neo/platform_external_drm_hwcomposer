@@ -2951,4 +2951,45 @@ TEST_F(DrmHwcTest, RefreshConnectorsAssignsDistinctPortsWhenMstPathBlobIsZero) {
   EXPECT_EQ(mst_302->GetIndexInResArray(), 3U);
 }
 
+TEST_F(DrmHwcTest, SetActiveConfigsBatchCommitIsBlocking) {
+  auto primary_pipe = CreatePipelineWithModes(
+      {CreateFakeDrmMode(kFakeDefaultModeWidth, kFakeDefaultModeHeight,
+                         kTestRefresh60Hz, DRM_MODE_TYPE_PREFERRED, "1080p60"),
+       CreateFakeDrmMode(kFakeDefaultModeWidth, kFakeDefaultModeHeight,
+                         kTestRefresh120Hz, 0, "1080p120")},
+      /*is_external=*/false);
+  auto ext_pipe = CreatePipelineWithModes(
+      {CreateFakeDrmMode(kFakeDefaultModeWidth, kFakeDefaultModeHeight,
+                         kTestRefresh60Hz, DRM_MODE_TYPE_PREFERRED, "1080p60"),
+       CreateFakeDrmMode(kFakeDefaultModeWidth, kFakeDefaultModeHeight,
+                         kTestRefresh120Hz, 0, "1080p120")},
+      /*is_external=*/true);
+  ASSERT_TRUE(hwc.BindDisplay(primary_pipe));
+  ASSERT_TRUE(hwc.BindDisplay(ext_pipe));
+  hwc.FinalizeDisplayBinding();
+
+  HwcDisplay* primary = hwc.GetDisplay(kPrimaryDisplay);
+  HwcDisplay* external = hwc.GetDisplay(1);
+  ASSERT_NE(primary, nullptr);
+  ASSERT_NE(external, nullptr);
+  EXPECT_EQ(external->SetPowerMode(HwcDisplay::PowerMode::kOn),
+            HwcDisplay::Error::kNone);
+
+  auto* sink = fake_device->GetFakeAtomicCommitSink();
+  sink->ClearHistory();
+
+  EXPECT_EQ(hwc.SetActiveConfigs(
+                {{.display_id = kPrimaryDisplay,
+                  .config_id = primary->GetDisplayConfigs()[1].id,
+                  .seamless = false},
+                 {.display_id = 1,
+                  .config_id = external->GetDisplayConfigs()[1].id,
+                  .seamless = false}}),
+            HwcDisplay::ConfigError::kNone);
+  ASSERT_EQ(sink->GetCommitHistory().size(), 1U);
+  ASSERT_EQ(sink->GetCommitHistory()[0].size(), 2U);
+  EXPECT_TRUE(sink->GetCommitHistory()[0][0].blocking);
+  EXPECT_TRUE(sink->GetCommitHistory()[0][1].blocking);
+}
+
 }  // namespace android::drm_hwcomposer

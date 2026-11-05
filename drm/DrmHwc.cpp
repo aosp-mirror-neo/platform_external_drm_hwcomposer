@@ -520,6 +520,7 @@ HwcDisplay::ConfigError DrmHwc::SetActiveConfigs(
       return HwcDisplay::ConfigError::kBadConfig;
     }
     display_args->seamless = desired_config.seamless;
+    display_args->blocking = !desired_config.seamless;
     commit_args.emplace_back(display->GetPipe().atomic_state_manager.get(),
                              *display_args);
     if (first_display == nullptr) {
