@@ -412,7 +412,7 @@ HwcDisplay::ConfigError HwcDisplay::SetConfig(ConfigId config) {
     ClearStagedModeConfig();
     staged_power_mode_.reset();
     link_recovery_modeset_required_ = false;
-    defer_modeset_until_power_on_ = false;
+    defer_commits_until_power_on_ = false;
     hwc_->LogRefreshRateChanges();
     return ConfigError::kNone;
   }
@@ -420,7 +420,7 @@ HwcDisplay::ConfigError HwcDisplay::SetConfig(ConfigId config) {
   // While the display's initial KMS modeset is deferred (or the display is
   // powered off), stage the client-selected mode in memory without activating
   // the CRTC in KMS until SetPowerMode(PowerMode::kOn) is called.
-  if (defer_modeset_until_power_on_) {
+  if (defer_commits_until_power_on_) {
     active_config_id_ = config;
     ClearStagedModeConfig();
     SetOutputType(new_config->output_type);
@@ -479,7 +479,7 @@ auto HwcDisplay::QueueConfig(ConfigId config, int64_t desired_time,
   }
 
   const HwcDisplayConfig *current_config = GetCurrentConfig();
-  if (link_recovery_modeset_required_ || defer_modeset_until_power_on_ ||
+  if (link_recovery_modeset_required_ || defer_commits_until_power_on_ ||
       (!IsInHeadlessMode() && !GetPipe().atomic_state_manager->IsActive()) ||
       !current_config || current_config->group_id != new_config->group_id) {
     return ConfigError::kSeamlessNotAllowed;
@@ -516,7 +516,7 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
     validated_composition_.reset();
   }
 
-  if (IsInHeadlessMode()) {
+  if (IsInHeadlessMode() || defer_commits_until_power_on_) {
     return {};
   }
 
@@ -638,7 +638,10 @@ auto HwcDisplay::PresentStagedComposition(
     std::vector<ReleaseFence> &out_release_fences) -> bool {
   ATRACE_CALL();
 
-  if (IsInHeadlessMode()) {
+  // Short-circuit while powered off or deferred so stray client frames cannot
+  // auto-enable the CRTC in DrmAtomicStateManager::GetAtomicModeReqForArgs().
+  if (IsInHeadlessMode() || defer_commits_until_power_on_) {
+    validated_composition_.reset();
     return true;
   }
 
@@ -925,7 +928,7 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
   // If the request is to enable the display, the CRTC is not active, and an
   // active config is set, try to reconfigure the pipeline with SetConfig.
   if (enabled) {
-    defer_modeset_until_power_on_ = false;
+    defer_commits_until_power_on_ = false;
     if (GetPipe().atomic_state_manager->IsActive() &&
         GetCurrentConfig() != nullptr) {
       if (vsync_event_en_) {
@@ -989,7 +992,7 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
                                          .GetValue()
                                          .value_or(0) != 0;
     if (!GetPipe().atomic_state_manager->IsActive() && !has_kernel_crtc) {
-      defer_modeset_until_power_on_ = true;
+      defer_commits_until_power_on_ = true;
       last_presented_composition_.Reset();
       writeback_.reset();
       return HwcDisplay::Error::kNone;
@@ -1021,7 +1024,7 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
   if (enabled) {
     requires_reprobe_on_power_on_ = false;
   } else {
-    defer_modeset_until_power_on_ = true;
+    defer_commits_until_power_on_ = true;
     last_presented_composition_.Reset();
     writeback_.reset();
   }
@@ -1107,7 +1110,7 @@ void HwcDisplay::Deinit() {
   }
   edid_wrapper_.reset();
   link_recovery_modeset_required_ = false;
-  defer_modeset_until_power_on_ = false;
+  defer_commits_until_power_on_ = false;
 
   if (vsync_worker_) {
     vsync_worker_->StopThread();
@@ -1233,7 +1236,7 @@ bool HwcDisplay::Init() {
   }
 
   requires_reprobe_on_power_on_ = false;
-  defer_modeset_until_power_on_ = false;
+  defer_commits_until_power_on_ = false;
   if (!IsInHeadlessMode()) {
     if (Properties::FlatteningEnabled()) {
       auto flatcbk = (struct FlatConCallbacks){
@@ -1393,8 +1396,7 @@ bool HwcDisplay::Init() {
       vsync_worker_->SetVsyncPeriodNs(
           preferred_config->mode.GetVSyncPeriodNs());
     }
-    defer_modeset_until_power_on_ = true;
-    staged_power_mode_ = PowerMode::kOn;
+    defer_commits_until_power_on_ = true;
   } else {
     auto set_config_err = SetConfig(initial_config_id);
     if (set_config_err != HwcDisplay::ConfigError::kNone &&
@@ -1786,7 +1788,7 @@ CommitStatus HwcDisplay::TestComposition(
     CompositionPlanner::ValidatedComposition &composition) const {
   ATRACE_CALL();
 
-  if (IsInHeadlessMode()) {
+  if (IsInHeadlessMode() || defer_commits_until_power_on_) {
     return CommitStatus::Success();
   }
 
@@ -2046,7 +2048,7 @@ void HwcDisplay::ApplyCommitChanges(const AtomicCommitArgs &a_args) {
   if (a_args.power_mode) {
     staged_power_mode_.reset();
     if (*a_args.power_mode != PowerMode::kOff) {
-      defer_modeset_until_power_on_ = false;
+      defer_commits_until_power_on_ = false;
     }
   }
   if (a_args.display_mode) {
