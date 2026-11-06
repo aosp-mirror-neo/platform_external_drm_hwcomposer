@@ -3092,8 +3092,7 @@ TEST_F(
   ASSERT_NE(display.GetLastRequestedConfig(), nullptr);
 }
 
-TEST_F(HwcDisplayTest,
-       SetPowerModeOffPassesEmptyCompositionPlanToDisableActivePlanes) {
+TEST_F(HwcDisplayTest, SetPowerModeOffOnActiveDisplaySkipsPipelineTeardown) {
   auto pipeline = CreatePipelineWithModes(
       {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
                          DRM_MODE_TYPE_PREFERRED, "1080p60")},
@@ -3105,26 +3104,80 @@ TEST_F(HwcDisplayTest,
   EXPECT_EQ(display.SetPowerMode(PowerMode::kOn), HwcDisplay::Error::kNone);
   ASSERT_TRUE(pipeline->atomic_state_manager->IsActive());
 
-  // Verify that DrmAtomicStateManager disables active planes on teardown even
-  // when args.composition is null, so HwcDisplay::SetPowerMode(PowerMode::kOff)
-  // does not need to pass a dummy LayerToPlaneJoiningPlan (which would trigger
-  // PresentDisplay() after power-off on SdmAtomicStateManager).
-  const uint32_t primary_plane_id = pipeline->primary_plane->Get()->GetId();
-  AtomicCommitArgs req_args{};
-  req_args.blocking = true;
-  req_args.power_mode = PowerMode::kOff;
-  req_args.teardown = true;
-  auto req = pipeline->atomic_state_manager->GetAtomicModeReqForArgs(req_args);
-  ASSERT_NE(req, nullptr);
-  void* raw_req = req.get();
-  auto* drm_req = static_cast<DrmAtomicStateManager::DrmAtomicRequest*>(
-      raw_req);
-  EXPECT_EQ(GetAtomicReqPropertyValue(drm_req->property_set.get(),
-                                      primary_plane_id, kFakePlaneCrtcPropId),
-            0ULL);
-  EXPECT_EQ(GetAtomicReqPropertyValue(drm_req->property_set.get(),
-                                      primary_plane_id, kFakePlaneFbPropId),
-            0ULL);
+  auto* sink = fake_device->GetFakeAtomicCommitSink();
+  sink->ClearHistory();
+
+  EXPECT_EQ(display.SetPowerMode(PowerMode::kOff), HwcDisplay::Error::kNone);
+  ASSERT_EQ(sink->GetCommitHistory().size(), 1U);
+  ASSERT_EQ(sink->GetCommitHistory()[0].size(), 1U);
+  const auto& off_args = sink->GetCommitHistory()[0][0];
+  EXPECT_EQ(off_args.power_mode, PowerMode::kOff);
+  EXPECT_FALSE(off_args.teardown);
+  EXPECT_EQ(off_args.composition, nullptr)
+      << "HwcDisplay::SetPowerMode(PowerMode::kOff) must leave composition "
+         "null so SDM does not call PresentDisplay() after powering off";
+}
+
+TEST_F(HwcDisplayTest, DeinitAfterPowerOffTearsDownKmsPipeline) {
+  auto pipeline = CreatePipelineWithModes(
+      {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
+                         DRM_MODE_TYPE_PREFERRED, "1080p60")},
+      /*is_external=*/false);
+  ASSERT_NE(pipeline, nullptr);
+
+  HwcDisplay display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
+  ASSERT_TRUE(display.SetPipeline(pipeline));
+  EXPECT_EQ(display.SetPowerMode(PowerMode::kOff), HwcDisplay::Error::kNone);
+  ASSERT_FALSE(pipeline->atomic_state_manager->IsActive());
+
+  const uint32_t conn_id = pipeline->connector->Get()->GetId();
+  const uint32_t crtc_id = pipeline->crtc->Get()->GetId();
+  std::optional<uint64_t> deinit_conn_crtc;
+  std::optional<uint64_t> deinit_crtc_mode;
+  auto* sink = fake_device->GetFakeAtomicCommitSink();
+  sink->SetExecuteCommitHook([&](const std::vector<std::pair<
+                                     AtomicStateManager*, AtomicCommitArgs>>&
+                                     batch) {
+    AtomicCommitArgs mutable_args = batch.front().second;
+    auto req = batch.front().first->GetAtomicModeReqForArgs(mutable_args);
+    if (req) {
+      void* raw_req = req.get();
+      auto* prop_set = static_cast<DrmAtomicStateManager::DrmAtomicRequest*>(
+                           raw_req)
+                           ->property_set.get();
+      deinit_conn_crtc = GetAtomicReqPropertyValue(prop_set, conn_id,
+                                                   kFakeConnectorCrtcPropId);
+      deinit_crtc_mode = GetAtomicReqPropertyValue(prop_set, crtc_id,
+                                                   kFakeCrtcModePropId);
+      batch.front().first->FinishPendingRequest(mutable_args, std::move(req));
+    }
+    return CommitStatusOr<
+        std::vector<std::pair<AtomicStateManager*, AtomicCommitResult>>>(
+        std::vector<std::pair<AtomicStateManager*, AtomicCommitResult>>{
+            {batch.front().first, AtomicCommitResult{}}});
+  });
+
+  display.Deinit();
+  sink->SetExecuteCommitHook(nullptr);
+  EXPECT_EQ(deinit_conn_crtc, 0ULL);
+  EXPECT_EQ(deinit_crtc_mode, 0ULL);
+}
+
+TEST_F(HwcDisplayTest,
+       SetPowerModeOffTearsDownResidualKernelCrtcOnInactiveDisplay) {
+  auto* fake_conn = fake_device->AddPipelineResourcesWithModes(
+      {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
+                         DRM_MODE_TYPE_PREFERRED, "1080p60")},
+      /*is_external=*/true);
+  ASSERT_NE(fake_conn, nullptr);
+  std::shared_ptr<DrmDisplayPipeline>
+      pipeline = fake_device->GetBackend().CreatePipeline(*fake_conn);
+  ASSERT_NE(pipeline, nullptr);
+  fake_conn->SetCrtcIdPropertyValue(pipeline->crtc->Get()->GetId());
+
+  HwcDisplay display(DisplayHandle{1}, /*is_virtual=*/false, &hwc);
+  ASSERT_TRUE(display.SetPipeline(pipeline));
+  ASSERT_FALSE(pipeline->atomic_state_manager->IsActive());
 
   auto* sink = fake_device->GetFakeAtomicCommitSink();
   sink->ClearHistory();
@@ -3135,10 +3188,29 @@ TEST_F(HwcDisplayTest,
   const auto& off_args = sink->GetCommitHistory()[0][0];
   EXPECT_EQ(off_args.power_mode, PowerMode::kOff);
   EXPECT_TRUE(off_args.teardown);
-  EXPECT_EQ(off_args.composition, nullptr)
-      << "HwcDisplay::SetPowerMode(PowerMode::kOff) must leave composition "
-         "null and rely on teardown=true so SDM does not call PresentDisplay() "
-         "after powering off";
+}
+
+TEST_F(HwcDisplayTest, RedundantSetPowerModeOffAfterDpmsOffSkipsCommit) {
+  auto* fake_conn = fake_device->AddPipelineResourcesWithModes(
+      {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
+                         DRM_MODE_TYPE_PREFERRED, "1080p60")},
+      /*is_external=*/false);
+  ASSERT_NE(fake_conn, nullptr);
+  std::shared_ptr<DrmDisplayPipeline>
+      pipeline = fake_device->GetBackend().CreatePipeline(*fake_conn);
+  ASSERT_NE(pipeline, nullptr);
+  fake_conn->SetCrtcIdPropertyValue(pipeline->crtc->Get()->GetId());
+
+  HwcDisplay display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
+  ASSERT_TRUE(display.SetPipeline(pipeline));
+  ASSERT_TRUE(pipeline->atomic_state_manager->IsActive());
+
+  EXPECT_EQ(display.SetPowerMode(PowerMode::kOff), HwcDisplay::Error::kNone);
+  auto* sink = fake_device->GetFakeAtomicCommitSink();
+  sink->ClearHistory();
+
+  EXPECT_EQ(display.SetPowerMode(PowerMode::kOff), HwcDisplay::Error::kNone);
+  EXPECT_EQ(sink->GetExecuteCommitCount(), 0U);
 }
 
 TEST_F(HwcDisplayTest,

@@ -977,7 +977,11 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
     }
   } else {
     staged_power_mode_.reset();
-    const bool has_kernel_crtc = HasPhysicalConnector() &&
+    // requires_reprobe_on_power_on_ is set only after HWC's own successful
+    // PowerMode::kOff commit, so it doubles as "HWC owns this inactive binding"
+    // and prevents a redundant kOff from escalating to teardown.
+    const bool has_kernel_crtc = !requires_reprobe_on_power_on_ &&
+                                 HasPhysicalConnector() &&
                                  GetPipe()
                                          .connector->Get()
                                          ->GetCrtcIdProperty()
@@ -1000,7 +1004,7 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
   a_args.blocking = true;
   a_args.power_mode = mode;
   if (!enabled) {
-    a_args.teardown = true;
+    a_args.teardown = !GetPipe().atomic_state_manager->IsActive();
   }
 
   const auto result = ExecuteAtomicCommit(a_args);
