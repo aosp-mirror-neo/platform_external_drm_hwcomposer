@@ -159,6 +159,7 @@ class HwcDisplay : public ICompositorDisplay {
   bool IsCommitDeferredUntilPowerOn() const {
     return defer_commits_until_power_on_;
   }
+  bool IsSeamlessConfigAllowed(const HwcDisplayConfig &new_config) const;
   bool HasStagedPowerModeOn() const {
     return staged_power_mode_ == PowerMode::kOn &&
            !defer_commits_until_power_on_;

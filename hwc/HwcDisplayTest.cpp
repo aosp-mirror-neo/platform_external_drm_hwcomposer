@@ -4723,4 +4723,23 @@ TEST_F(HwcDisplayTest,
   EXPECT_TRUE(display.IsCommitDeferredUntilPowerOn());
 }
 
+TEST_F(HwcDisplayTest, CreateModesetCommitReturnsNulloptWhilePoweredOff) {
+  auto pipeline = CreatePipelineWithModes(
+      {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
+                         DRM_MODE_TYPE_PREFERRED, "1080p60"),
+       CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh120Hz, 0, "1080p120")},
+      /*is_external=*/false);
+  ASSERT_NE(pipeline, nullptr);
+
+  HwcDisplay display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
+  ASSERT_TRUE(display.SetPipeline(pipeline));
+  ASSERT_EQ(display.GetDisplayConfigs().size(), 2U);
+  const ConfigId second_config_id = display.GetDisplayConfigs()[1].id;
+
+  EXPECT_EQ(display.SetPowerMode(PowerMode::kOff), HwcDisplay::Error::kNone);
+  EXPECT_TRUE(display.IsCommitDeferredUntilPowerOn());
+  EXPECT_FALSE(display.GetDisplayEnabled());
+  EXPECT_FALSE(display.CreateModesetCommit(second_config_id).has_value());
+}
+
 }  // namespace android::drm_hwcomposer

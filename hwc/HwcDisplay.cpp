@@ -470,6 +470,14 @@ HwcDisplay::ConfigError HwcDisplay::SetConfig(ConfigId config) {
   return ConfigError::kNone;
 }
 
+bool HwcDisplay::IsSeamlessConfigAllowed(
+    const HwcDisplayConfig &new_config) const {
+  const HwcDisplayConfig *current_config = GetCurrentConfig();
+  return !link_recovery_modeset_required_ && !defer_commits_until_power_on_ &&
+         GetDisplayEnabled() && current_config != nullptr &&
+         current_config->group_id == new_config.group_id;
+}
+
 auto HwcDisplay::QueueConfig(ConfigId config, int64_t desired_time,
                              QueuedConfigTiming *out_timing) -> ConfigError {
   const HwcDisplayConfig *new_config = GetConfig(config);
@@ -478,12 +486,11 @@ auto HwcDisplay::QueueConfig(ConfigId config, int64_t desired_time,
     return ConfigError::kBadConfig;
   }
 
-  const HwcDisplayConfig *current_config = GetCurrentConfig();
-  if (link_recovery_modeset_required_ || defer_commits_until_power_on_ ||
-      (!IsInHeadlessMode() && !GetPipe().atomic_state_manager->IsActive()) ||
-      !current_config || current_config->group_id != new_config->group_id) {
+  if (!IsSeamlessConfigAllowed(*new_config)) {
     return ConfigError::kSeamlessNotAllowed;
   }
+
+  const HwcDisplayConfig *current_config = GetCurrentConfig();
 
   // Estimate the timestamp of the next vsync after the desired time.
   int64_t next_vsync = vsync_worker_->GetNextVsyncTimestamp(desired_time);
@@ -1643,7 +1650,7 @@ auto HwcDisplay::StopHdcp() -> bool {
 
 std::optional<AtomicCommitArgs> HwcDisplay::CreateModesetCommit(
     ConfigId configId) {
-  if (IsInHeadlessMode()) {
+  if (IsInHeadlessMode() || defer_commits_until_power_on_) {
     return std::nullopt;
   }
 
