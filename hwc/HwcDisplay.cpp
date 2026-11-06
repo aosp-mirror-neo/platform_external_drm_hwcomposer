@@ -1010,6 +1010,9 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
   // next frame update retries activating the display.
   if (!result.IsSuccess()) {
     if (!enabled) {
+      if (!GetPipe().atomic_state_manager->IsActive()) {
+        defer_commits_until_power_on_ = true;
+      }
       return HwcDisplay::Error::kBadParameter;
     }
     staged_power_mode_ = mode;
