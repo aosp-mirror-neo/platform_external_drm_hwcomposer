@@ -4599,4 +4599,31 @@ TEST_F(HwcDisplayTest,
   EXPECT_EQ(display.GetLastRequestedConfig()->id, hd_config_id);
 }
 
+TEST_F(HwcDisplayTest, FailedPowerOffCommitKeepsDisplayActive) {
+  auto pipeline = CreatePipelineWithModes(
+      {CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh60Hz,
+                         DRM_MODE_TYPE_PREFERRED, "1080p60"),
+       CreateFakeDrmMode(kFhdWidth, kFhdHeight, kRefresh120Hz, 0, "1080p120")},
+      /*is_external=*/false);
+  ASSERT_NE(pipeline, nullptr);
+
+  HwcDisplay display(kPrimaryDisplay, /*is_virtual=*/false, &hwc);
+  ASSERT_TRUE(display.SetPipeline(pipeline));
+  ASSERT_EQ(display.GetDisplayConfigs().size(), 2U);
+
+  QueuedConfigTiming timing{};
+  ASSERT_EQ(display.QueueConfig(display.GetDisplayConfigs()[1].id,
+                                /*desired_time=*/0, &timing),
+            HwcDisplay::ConfigError::kNone);
+  ASSERT_TRUE(display.IsVsyncTimestampTrackingEnabled());
+
+  fake_device->GetFakeAtomicCommitSink()->SetNextExecuteStatus(
+      CommitStatus::Failure(-EINVAL));
+  EXPECT_EQ(display.SetPowerMode(PowerMode::kOff),
+            HwcDisplay::Error::kBadParameter);
+  EXPECT_FALSE(display.IsCommitDeferredUntilPowerOn());
+  EXPECT_TRUE(display.GetDisplayEnabled());
+  EXPECT_TRUE(display.IsVsyncTimestampTrackingEnabled());
+}
+
 }  // namespace android::drm_hwcomposer

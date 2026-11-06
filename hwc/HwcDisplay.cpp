@@ -977,14 +977,6 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
     }
   } else {
     staged_power_mode_.reset();
-    // Clear the VSyncWorker callback and disable timestamp tracking directly so
-    // VSync events stop firing while the display is powered off, while
-    // preserving vsync_event_en_ and staged_mode_config_id_ for when the
-    // display is powered back on.
-    if (vsync_worker_) {
-      vsync_worker_->SetTimestampCallback(std::nullopt);
-      vsync_worker_->SetVsyncTimestampTracking(false);
-    }
     const bool has_kernel_crtc = HasPhysicalConnector() &&
                                  GetPipe()
                                          .connector->Get()
@@ -992,12 +984,15 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
                                          .GetValue()
                                          .value_or(0) != 0;
     if (!GetPipe().atomic_state_manager->IsActive() && !has_kernel_crtc) {
+      if (vsync_worker_) {
+        vsync_worker_->SetTimestampCallback(std::nullopt);
+        vsync_worker_->SetVsyncTimestampTracking(false);
+      }
       defer_commits_until_power_on_ = true;
       last_presented_composition_.Reset();
       writeback_.reset();
       return HwcDisplay::Error::kNone;
     }
-    requires_reprobe_on_power_on_ = true;
   }
 
   // Set the display active state.
@@ -1024,6 +1019,15 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
   if (enabled) {
     requires_reprobe_on_power_on_ = false;
   } else {
+    // Clear the VSyncWorker callback and disable timestamp tracking only after
+    // the PowerMode::kOff commit succeeds so a rejected commit leaves the
+    // active display's VSync tracking intact, while preserving vsync_event_en_
+    // and staged_mode_config_id_ for when the display is powered back on.
+    if (vsync_worker_) {
+      vsync_worker_->SetTimestampCallback(std::nullopt);
+      vsync_worker_->SetVsyncTimestampTracking(false);
+    }
+    requires_reprobe_on_power_on_ = true;
     defer_commits_until_power_on_ = true;
     last_presented_composition_.Reset();
     writeback_.reset();
